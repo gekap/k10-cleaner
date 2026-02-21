@@ -122,10 +122,12 @@ Stuck:     1 actions identified as stuck
 
 ## License
 
-MIT License — see [LICENSE](LICENSE) for details.
+This project is licensed under the **GNU Affero General Public License v3.0 (AGPL-3.0)** — see [LICENSE](LICENSE) for details.
+
+This means you are free to use, modify, and distribute this tool, but **any modifications or derivative works must also be released under AGPL-3.0**, including when used to provide a network service.
 
 This tool is provided **as-is, without warranty of any kind**. Use at your own risk. Always test with `--dry-run` first.
 
-### Enterprise Support
+### Commercial License
 
-For enterprise support, custom integrations, SLA-backed maintenance, or consulting services, contact: **georgios.kapellakis@yandex.com**
+If your organization requires a **proprietary/commercial license** (without AGPL copyleft obligations), enterprise support, custom integrations, or SLA-backed maintenance, contact: **georgios.kapellakis@yandex.com**
