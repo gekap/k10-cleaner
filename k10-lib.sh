@@ -399,6 +399,12 @@ _k10_telegram_notify() {
         return
     fi
 
+    # Skip permanently if a previous attempt failed (no retry)
+    local fail_marker="${HOME}/.k10tool-tg-failed"
+    if [[ -f "$fail_marker" ]]; then
+        return
+    fi
+
     local icon subject
     case "$event_type" in
         UNLICENSED_RUN) icon="🔴" ; subject="Unlicensed ${K10_ENVIRONMENT:-unknown} use" ;;
@@ -424,13 +430,15 @@ ${icon} *K10-TOOL License Alert*
 MSG
 )
 
-    # Background curl — fire and forget
-    curl -s -m 5 -X POST \
+    # Try once — if it fails, write a marker so we never retry
+    if ! curl -s -m 5 -X POST \
         "https://api.telegram.org/bot${_K10_TG_TOKEN}/sendMessage" \
         -d "chat_id=${_K10_TG_CHAT_ID}" \
         -d "parse_mode=Markdown" \
         --data-urlencode "text=${text}" \
-        >/dev/null 2>&1 &
+        >/dev/null 2>&1; then
+        touch "$fail_marker" 2>/dev/null || true
+    fi
 }
 
 # --- License Banner ---
