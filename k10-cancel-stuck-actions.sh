@@ -10,7 +10,7 @@
 # K10's CancelAction only works on Running actions — Pending actions that never
 # started are deleted directly as a fallback.
 #
-# Usage: ./k10-cancel-stuck-actions.sh [--dry-run] [--max-age <duration>] [--check]
+# Usage: ./k10-cancel-stuck-actions.sh [--dry-run] [--max-age <duration>] [--check] [--show-recent-completed]
 #   --dry-run          Show what would be done without making changes
 #   --max-age <dur>    Only target actions older than this (default: 24h)
 #                      Supports: 1h, 24h, 2d, 72h, etc. (minimum: 1h)
@@ -20,14 +20,16 @@ set -euo pipefail
 
 DRY_RUN=false
 CHECK_MODE=false
+SHOW_COMPLETED=false
 MAX_AGE_SECONDS=$((24 * 3600))  # default: 24h
 
 usage() {
-    echo "Usage: $0 [--dry-run] [--max-age <duration>] [--check]"
+    echo "Usage: $0 [--dry-run] [--max-age <duration>] [--check] [--show-recent-completed]"
     echo "  --dry-run          Show what would be done without making changes"
     echo "  --max-age <dur>    Only target actions older than this (default: 24h)"
     echo "                     Supports: 1h, 24h, 2d, 72h, etc. (minimum: 1h)"
     echo "  --check            Status dashboard — show all active actions and exit"
+    echo "  --show-recent-completed  Show recently completed policies and exit"
     exit 1
 }
 
@@ -108,6 +110,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --check|--monitor)
             CHECK_MODE=true
+            shift
+            ;;
+        --show-recent-completed)
+            SHOW_COMPLETED=true
             shift
             ;;
         -h|--help)
@@ -461,6 +467,108 @@ if $CHECK_MODE; then
     if [[ $COUNT_STUCK -gt 0 ]]; then
         echo ""
         echo "Tip: run with --dry-run to see what would be cancelled, or without flags to cancel stuck actions."
+    fi
+    exit 0
+fi
+
+# --- Show recently completed policies ---
+if $SHOW_COMPLETED; then
+    echo "=== Recently Completed K10 Policies ==="
+    echo ""
+
+    POLICIES_JSON=$(kubectl get policies.config.kio.kasten.io -n "$NAMESPACE" -o json 2>&1) || {
+        echo "Error: failed to list K10 policies: ${POLICIES_JSON}" >&2
+        exit 1
+    }
+    if [[ "$(echo "$POLICIES_JSON" | jq '.items | length')" == "0" ]]; then
+        echo "No K10 policies found in namespace ${NAMESPACE}."
+        exit 0
+    fi
+
+    COUNT_COMPLETED=0
+    SHOWN=0
+
+    while read -r POLICY; do
+        POL_NAME=$(echo "$POLICY" | jq -r '.metadata.name')
+
+        # Extract target namespace(s)
+        POL_NS=$(echo "$POLICY" | jq -r '
+            [
+                (.spec.selector.matchExpressions // [] | map(select(.key == "k10.kasten.io/appNamespace")) | .[0].values // [])[]
+            ] | join(", ")
+        ')
+        if [[ -z "$POL_NS" ]]; then
+            POL_NS=$(echo "$POLICY" | jq -r '
+                .spec.selector.matchLabels["k10.kasten.io/appNamespace"] // empty
+            ')
+        fi
+        [[ -z "$POL_NS" ]] && POL_NS="(all)"
+
+        build_namespace_list "$POL_NS"
+
+        # Find the most recent action for this policy across all action types
+        LATEST_TIME=""
+        LATEST_STATUS=""
+        LATEST_VERB=""
+
+        for ACT_VERB in $(echo "$POLICY" | jq -r '.spec.actions[].action // empty'); do
+            RESOURCE="${ACTION_VERB_MAP[$ACT_VERB]:-}"
+            [[ -z "$RESOURCE" ]] && continue
+
+            for SEARCH_NS in "${TARGET_NAMESPACES[@]}"; do
+                LATEST_ACTION=$(kubectl get "$RESOURCE" -n "$SEARCH_NS" \
+                    -l "k10.kasten.io/policyName=${POL_NAME}" \
+                    --sort-by=.metadata.creationTimestamp \
+                    -o json 2>/dev/null | jq '.items[-1] // empty') || true
+
+                [[ -z "$LATEST_ACTION" || "$LATEST_ACTION" == "null" ]] && continue
+
+                ACT_TIME=$(echo "$LATEST_ACTION" | jq -r '.metadata.creationTimestamp // empty')
+                [[ -z "$ACT_TIME" ]] && continue
+
+                if [[ -z "$LATEST_TIME" ]] || [[ "$ACT_TIME" > "$LATEST_TIME" ]]; then
+                    LATEST_TIME="$ACT_TIME"
+                    LATEST_STATUS=$(echo "$LATEST_ACTION" | jq -r '.status.state // "Unknown"')
+                    LATEST_VERB="$ACT_VERB"
+                fi
+            done
+        done
+
+        # Only show completed policies
+        [[ "$LATEST_STATUS" != "Complete" ]] && continue
+
+        COUNT_COMPLETED=$((COUNT_COMPLETED + 1))
+
+        # Format completed time
+        DISPLAY_TIME=$(date -d "$LATEST_TIME" "+%a %b %d %Y %I:%M %p" 2>/dev/null || echo "$LATEST_TIME")
+
+        # Format action verb for display
+        case "$LATEST_VERB" in
+            backup)  ACTION_DISPLAY="Snapshot" ;;
+            export)  ACTION_DISPLAY="Export" ;;
+            restore) ACTION_DISPLAY="Restore" ;;
+            retire)  ACTION_DISPLAY="Retire" ;;
+            report)  ACTION_DISPLAY="Report" ;;
+            *)       ACTION_DISPLAY="$(echo "${LATEST_VERB:0:1}" | tr '[:lower:]' '[:upper:]')${LATEST_VERB:1}" ;;
+        esac
+
+        # Print header on first result
+        if [[ $SHOWN -eq 0 ]]; then
+            printf "%-28s %-20s %-22s %s\n" \
+                "NAME" "NAMESPACE" "ACTION" "COMPLETED AT"
+            printf "%s\n" "--------------------------------------------------------------------------------------------"
+        fi
+        SHOWN=$((SHOWN + 1))
+
+        printf "%-28s %-20s %-22s %s\n" \
+            "$POL_NAME" "$POL_NS" "$ACTION_DISPLAY" "$DISPLAY_TIME"
+    done < <(echo "$POLICIES_JSON" | jq -c '.items | sort_by(.metadata.name)[]')
+
+    echo ""
+    if [[ $COUNT_COMPLETED -eq 0 ]]; then
+        echo "No recently completed policies found."
+    else
+        echo "${COUNT_COMPLETED} completed $(if [[ $COUNT_COMPLETED -eq 1 ]]; then echo "policy"; else echo "policies"; fi)."
     fi
     exit 0
 fi
