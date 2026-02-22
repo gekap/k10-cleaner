@@ -146,7 +146,7 @@ Stuck:     1 actions identified as stuck
 
 ## License Compliance System
 
-The tool includes automatic enterprise environment detection and license key enforcement powered by `k10-lib.sh`. This system is **non-blocking** — it never prevents the tool from running, but enterprise clusters will see a persistent license banner on every run until a valid key is provided.
+The tool includes a **two-tier licensing model** powered by `k10-lib.sh`. It is **free on dev, UAT, and staging** clusters but **requires a license on production and DR** environments. This system is **non-blocking** — it never prevents the tool from running, but production/DR clusters will see a persistent license banner on every run until a valid key is provided.
 
 ### How It Works
 
@@ -154,7 +154,33 @@ On startup, the script:
 
 1. **Generates a cluster fingerprint** — SHA256 hash of the `kube-system` namespace UID, truncated to 16 characters. Anonymous and deterministic (same cluster always produces the same ID). Logged to `~/.k10tool-fingerprint`.
 
-2. **Detects enterprise environments** using a scoring system (0-5 points):
+2. **Detects environment type** by checking cluster naming signals (first match wins):
+
+| Priority | Signal | Source | API Call? |
+|----------|--------|--------|-----------|
+| 1 | `kubectl config current-context` | Context name | No |
+| 2 | Cluster name from kubeconfig | `kubectl config view --minify` | No |
+| 3 | Namespace labels (`env=` / `environment=`) | Namespace metadata | Yes |
+| 4 | Node labels (`env=` / `environment=`) | Node metadata | Yes |
+| 5 | Server URL hostname | Kubeconfig | No |
+
+   Each signal is matched against word-boundary patterns for known environments:
+
+   - **production**: `prod`, `prd`, `production`, `live`
+   - **dr**: `dr`, `disaster-recovery`, `failover`, `standby`
+   - **uat**: `uat`, `acceptance`, `pre-prod`, `preprod`
+   - **staging**: `staging`, `stg`, `stage`
+   - **dev**: `dev`, `develop`, `development`, `sandbox`, `test`, `testing`, `lab`, `local`, `minikube`, `kind`, `k3s`, `docker-desktop`
+
+   You can override detection by setting `K10TOOL_ENVIRONMENT` (e.g., `export K10TOOL_ENVIRONMENT=dev`).
+
+3. **Determines license requirement** based on detected environment:
+
+   - **production** or **dr** → license required
+   - **dev**, **uat**, or **staging** → free, no license needed
+   - **unknown** (no signal matched) → falls back to enterprise scoring (score >= 3 = license required)
+
+4. **Enterprise scoring** (0-5 points, used as fallback for unknown environments):
 
 | Signal | Points | Detection Method |
 |--------|--------|-----------------|
@@ -164,20 +190,19 @@ On startup, the script:
 | HA control plane (>1 control-plane node) | +1 | Node labels + apiserver pod count |
 | Paid K10 license (>5 nodes + license present) | +1 | K10 configmap/secret |
 
-   A score of **3 or higher** triggers enterprise detection. This prevents false positives on lab/dev clusters.
+5. **License key validation** — on license-required clusters, the banner **cannot be suppressed** without a valid license key tied to the cluster fingerprint. `K10TOOL_NO_BANNER=true` is ignored on license-required clusters.
 
-3. **License key validation** — on enterprise clusters, the banner **cannot be suppressed** without a valid license key tied to the cluster fingerprint. `K10TOOL_NO_BANNER=true` is ignored on enterprise clusters.
-
-4. **Optional telemetry** — only when explicitly opted in via environment variables.
+6. **Optional telemetry** — only when explicitly opted in via environment variables.
 
 ### Obtaining a License Key
 
-Enterprise users will see a banner like this on every run:
+Production and DR users will see a banner like this on every run:
 
 ```
 ================================================================================
-  K10-TOOL  —  Enterprise Environment Detected (Unlicensed)
+  K10-TOOL  —  Production Environment (Unlicensed)
 ================================================================================
+  Environment:  production (detected via context:prod-eks-cluster)
   Cluster ID:   a1b2c3d4e5f67890
   ...
   To obtain a license key for this cluster, contact:
@@ -194,8 +219,9 @@ Each license key is unique to a cluster fingerprint and cannot be reused across 
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `K10TOOL_LICENSE_KEY` | unset | License key for this cluster (suppresses banner on enterprise clusters) |
-| `K10TOOL_NO_BANNER` | unset | Set to `true` to suppress the banner (only works on non-enterprise clusters) |
+| `K10TOOL_LICENSE_KEY` | unset | License key for this cluster (suppresses banner on production/DR clusters) |
+| `K10TOOL_ENVIRONMENT` | unset | Override auto-detected environment (`production`, `dr`, `uat`, `staging`, `dev`) |
+| `K10TOOL_NO_BANNER` | unset | Set to `true` to suppress the banner (only works on non-license-required clusters) |
 | `K10TOOL_REPORT` | unset | Set to `true` to opt in to anonymous telemetry |
 | `K10TOOL_REPORT_ENDPOINT` | unset | HTTPS URL for telemetry POST (required alongside `K10TOOL_REPORT`) |
 | `K10TOOL_FINGERPRINT_FILE` | `~/.k10tool-fingerprint` | Custom path for the fingerprint log file |
@@ -205,7 +231,7 @@ Each license key is unique to a cluster fingerprint and cannot be reused across 
 - All kubectl calls are guarded — detection failures produce defaults, never crash the tool
 - If `k10-lib.sh` is missing, the tool works normally without compliance features
 - The banner never appears when `--help` is used (exits before compliance check)
-- Adds ~300-500ms overhead at startup (8 lightweight kubectl calls, run once)
+- Environment detection adds minimal overhead (first two signals are local, no API calls)
 
 ## License
 
