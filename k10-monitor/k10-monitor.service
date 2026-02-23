@@ -1,5 +1,5 @@
 [Unit]
-Description=K10-TOOL License Compliance Monitor
+Description=K10-CLEANER License Compliance Monitor
 After=network.target
 
 [Service]

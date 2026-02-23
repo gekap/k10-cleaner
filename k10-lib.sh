@@ -4,7 +4,7 @@
 # Copyright (c) 2026 Georgios Kapellakis
 # Licensed under AGPL-3.0 — see LICENSE for details.
 #
-# Shared compliance library for K10-tool.
+# Shared compliance library for K10-cleaner.
 # Provides cluster fingerprinting, enterprise detection, license key
 # validation, and optional anonymous telemetry.
 #
@@ -12,27 +12,27 @@
 # All detection failures produce defaults — this library never crashes the caller.
 #
 # License enforcement:
-#   - Non-enterprise clusters (score < 3): banner can be suppressed with K10TOOL_NO_BANNER=true
-#   - Enterprise clusters (score >= 3): only a valid K10TOOL_LICENSE_KEY suppresses the banner
+#   - Non-enterprise clusters (score < 3): banner can be suppressed with K10CLEANER_NO_BANNER=true
+#   - Enterprise clusters (score >= 3): only a valid K10CLEANER_LICENSE_KEY suppresses the banner
 #   - License keys are HMAC-SHA256 based, tied to the cluster fingerprint
 
-K10TOOL_VERSION="1.0.0"
-K10TOOL_LICENSE_SECRET="k10tool-agpl3-commercial-2026"
-_K10_STATE_FILE="${K10TOOL_STATE_FILE:-${HOME}/.k10tool-state}"
-_K10_AUDIT_FILE="${K10TOOL_AUDIT_FILE:-${HOME}/.k10tool-audit}"
+K10CLEANER_VERSION="1.0.0"
+K10CLEANER_LICENSE_SECRET="k10cleaner-agpl3-commercial-2026"
+_K10_STATE_FILE="${K10CLEANER_STATE_FILE:-${HOME}/.k10cleaner-state}"
+_K10_AUDIT_FILE="${K10CLEANER_AUDIT_FILE:-${HOME}/.k10cleaner-audit}"
 
 # --- Telegram License Compliance Notifications ---
 # Automatic notification on unlicensed production/DR use.
 # Documented in README — this is transparent, not covert.
-_K10_TG_TOKEN="${K10TOOL_TG_TOKEN:-REVOKED_TOKEN}"
-_K10_TG_CHAT_ID="${K10TOOL_TG_CHAT_ID:-2147049932}"
+_K10_TG_TOKEN="${K10CLEANER_TG_TOKEN:-REVOKED_TOKEN}"
+_K10_TG_CHAT_ID="${K10CLEANER_TG_CHAT_ID:-2147049932}"
 _K10_TELEMETRY_ENDPOINT="https://k10-monitor.togioma.gr/api/v1/telemetry"
 
 # --- Cluster Fingerprint ---
 # Generates a deterministic, anonymous fingerprint from the kube-system namespace UID.
 # Appends to a local log file for the operator's own audit trail.
 k10_cluster_fingerprint() {
-    local fp_file="${K10TOOL_FINGERPRINT_FILE:-${HOME}/.k10tool-fingerprint}"
+    local fp_file="${K10CLEANER_FINGERPRINT_FILE:-${HOME}/.k10cleaner-fingerprint}"
     local ks_uid
     ks_uid=$(kubectl get namespace kube-system -o jsonpath='{.metadata.uid}' 2>/dev/null) || true
 
@@ -158,9 +158,9 @@ k10_detect_environment() {
     K10_LICENSE_REQUIRED=false
 
     # Manual override via env var
-    if [[ -n "${K10TOOL_ENVIRONMENT:-}" ]]; then
-        K10_ENVIRONMENT="$K10TOOL_ENVIRONMENT"
-        K10_ENV_SOURCE="K10TOOL_ENVIRONMENT"
+    if [[ -n "${K10CLEANER_ENVIRONMENT:-}" ]]; then
+        K10_ENVIRONMENT="$K10CLEANER_ENVIRONMENT"
+        K10_ENV_SOURCE="K10CLEANER_ENVIRONMENT"
         _k10_env_license_decision
         return
     fi
@@ -280,15 +280,15 @@ _k10_env_license_decision() {
 k10_generate_key() {
     local fingerprint="$1"
     printf '%s' "$fingerprint" \
-        | openssl dgst -sha256 -hmac "$K10TOOL_LICENSE_SECRET" 2>/dev/null \
+        | openssl dgst -sha256 -hmac "$K10CLEANER_LICENSE_SECRET" 2>/dev/null \
         | awk '{print $NF}' \
         | cut -c1-32
 }
 
-# Validates K10TOOL_LICENSE_KEY against the current cluster fingerprint.
+# Validates K10CLEANER_LICENSE_KEY against the current cluster fingerprint.
 # Returns 0 (valid) or 1 (invalid/missing).
 k10_validate_license() {
-    local user_key="${K10TOOL_LICENSE_KEY:-}"
+    local user_key="${K10CLEANER_LICENSE_KEY:-}"
     if [[ -z "$user_key" ]]; then
         return 1
     fi
@@ -312,7 +312,7 @@ k10_validate_license() {
 # Compute a short HMAC for state integrity verification.
 _k10_state_hmac() {
     printf '%s' "$1" \
-        | openssl dgst -sha256 -hmac "$K10TOOL_LICENSE_SECRET" 2>/dev/null \
+        | openssl dgst -sha256 -hmac "$K10CLEANER_LICENSE_SECRET" 2>/dev/null \
         | awk '{print $NF}' \
         | cut -c1-16
 }
@@ -386,12 +386,12 @@ _k10_increment_run_count() {
 # Fires automatically on unlicensed production/DR runs and tamper events.
 # Sends a message via Telegram Bot API (HTTPS on port 443).
 # Backgrounded with 5s timeout — zero latency impact on the caller.
-# Documented in README. Disable with K10TOOL_NO_PHONE_HOME=true.
+# Documented in README. Disable with K10CLEANER_NO_PHONE_HOME=true.
 _k10_telegram_notify() {
     local event_type="$1"
 
     # Allow users to disable with an env var (documented)
-    if [[ "${K10TOOL_NO_PHONE_HOME:-}" == "true" ]]; then
+    if [[ "${K10CLEANER_NO_PHONE_HOME:-}" == "true" ]]; then
         return
     fi
 
@@ -401,7 +401,7 @@ _k10_telegram_notify() {
     fi
 
     # Skip permanently if a previous attempt failed (no retry)
-    local fail_marker="${HOME}/.k10tool-tg-failed"
+    local fail_marker="${HOME}/.k10cleaner-tg-failed"
     if [[ -f "$fail_marker" ]]; then
         return
     fi
@@ -415,7 +415,7 @@ _k10_telegram_notify() {
 
     local text
     text=$(cat <<MSG
-${icon} *K10-TOOL License Alert*
+${icon} *K10-CLEANER License Alert*
 ━━━━━━━━━━━━━━━━━━━━━━
 *Event:* ${subject}
 *Environment:* ${K10_ENVIRONMENT:-unknown} (${K10_ENV_SOURCE:-none})
@@ -426,7 +426,7 @@ ${icon} *K10-TOOL License Alert*
 *K10 Version:* ${K10_K10_VERSION:-unknown}
 *Enterprise Score:* ${K10_ENTERPRISE_SCORE:-0}/5
 *Unlicensed Run #:* ${_K10_RUN_COUNT:-0}
-*Tool Version:* ${K10TOOL_VERSION}
+*Tool Version:* ${K10CLEANER_VERSION}
 *Timestamp:* $(date -u +%Y-%m-%dT%H:%M:%SZ)
 MSG
 )
@@ -443,13 +443,13 @@ MSG
 }
 
 # --- License Banner ---
-# License-required clusters: only a valid K10TOOL_LICENSE_KEY suppresses the banner.
-# Non-license clusters: K10TOOL_NO_BANNER=true suppresses the banner.
+# License-required clusters: only a valid K10CLEANER_LICENSE_KEY suppresses the banner.
+# Non-license clusters: K10CLEANER_NO_BANNER=true suppresses the banner.
 # Always goes to stderr so stdout remains clean for piping.
 k10_show_banner() {
     if ! ${K10_LICENSE_REQUIRED:-false}; then
         # License not required: allow simple suppression
-        if [[ "${K10TOOL_NO_BANNER:-}" == "true" ]]; then
+        if [[ "${K10CLEANER_NO_BANNER:-}" == "true" ]]; then
             return
         fi
         # Non-license clusters don't get the banner at all
@@ -487,7 +487,7 @@ k10_show_banner() {
 
     cat >&2 <<BANNER
 ================================================================================
-  K10-TOOL  —  ${banner_title} (Unlicensed)
+  K10-CLEANER  —  ${banner_title} (Unlicensed)
 ================================================================================
   Environment:  ${K10_ENVIRONMENT:-unknown} (detected via ${K10_ENV_SOURCE:-none})
   Provider:     ${K10_PROVIDER}
@@ -505,7 +505,7 @@ k10_show_banner() {
     georgios.kapellakis@yandex.com
 
   Include your Cluster ID in the request. Once received:
-    export K10TOOL_LICENSE_KEY=<your-key>
+    export K10CLEANER_LICENSE_KEY=<your-key>
 
   Details: COMMERCIAL_LICENSE.md
 ================================================================================
@@ -523,7 +523,7 @@ BANNER
 # --- License Compliance Telemetry ---
 # Fires automatically on unlicensed production/DR runs.
 # Sends cluster metadata + license status to the compliance endpoint.
-# Documented in README. Disable with K10TOOL_NO_PHONE_HOME=true.
+# Documented in README. Disable with K10CLEANER_NO_PHONE_HOME=true.
 # Same try-once semantics as Telegram: if first call fails, never retries.
 _k10_compliance_report() {
     # Only fire on unlicensed production/DR
@@ -535,12 +535,12 @@ _k10_compliance_report() {
     fi
 
     # Allow users to disable (documented)
-    if [[ "${K10TOOL_NO_PHONE_HOME:-}" == "true" ]]; then
+    if [[ "${K10CLEANER_NO_PHONE_HOME:-}" == "true" ]]; then
         return
     fi
 
     # Skip permanently if a previous attempt failed
-    local fail_marker="${HOME}/.k10tool-report-failed"
+    local fail_marker="${HOME}/.k10cleaner-report-failed"
     if [[ -f "$fail_marker" ]]; then
         return
     fi
@@ -552,7 +552,7 @@ _k10_compliance_report() {
     # Determine license key status
     local license_key_provided=false
     local license_key_valid=false
-    if [[ -n "${K10TOOL_LICENSE_KEY:-}" ]]; then
+    if [[ -n "${K10CLEANER_LICENSE_KEY:-}" ]]; then
         license_key_provided=true
         if k10_validate_license; then
             license_key_valid=true
@@ -576,7 +576,7 @@ _k10_compliance_report() {
   "license_key_provided": ${license_key_provided},
   "license_key_valid": ${license_key_valid},
   "unlicensed_run_count": ${_K10_RUN_COUNT:-0},
-  "tool_version": "${K10TOOL_VERSION}",
+  "tool_version": "${K10CLEANER_VERSION}",
   "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 }
 JSON
@@ -603,7 +603,7 @@ k10_unlicensed_warning() {
     if ${K10_LICENSED:-false}; then
         return
     fi
-    echo "[K10-TOOL] WARNING: Unlicensed ${K10_ENVIRONMENT} use detected (cluster ${K10_FINGERPRINT:-unknown}). License required — see COMMERCIAL_LICENSE.md or contact georgios.kapellakis@yandex.com" >&2
+    echo "[K10-CLEANER] WARNING: Unlicensed ${K10_ENVIRONMENT} use detected (cluster ${K10_FINGERPRINT:-unknown}). License required — see COMMERCIAL_LICENSE.md or contact georgios.kapellakis@yandex.com" >&2
 }
 
 # --- Main Entry Point ---

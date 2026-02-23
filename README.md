@@ -1,4 +1,4 @@
-# K10-tool
+# K10-cleaner
 
 A smart stuck-action detection and cancellation tool for [Veeam Kasten K10](https://www.kasten.io/) backup environments.
 
@@ -8,7 +8,7 @@ K10 actions (backups, exports, restores) can get stuck in `Pending`, `Running`, 
 
 ### Smart Stuck Detection
 
-Unlike blindly cancelling all non-complete actions, K10-tool uses three layers of detection:
+Unlike blindly cancelling all non-complete actions, K10-cleaner uses three layers of detection:
 
 | Signal | Condition | Applies to |
 |--------|-----------|------------|
@@ -152,7 +152,7 @@ The tool includes a **two-tier licensing model** powered by `k10-lib.sh`. It is 
 
 On startup, the script:
 
-1. **Generates a cluster fingerprint** — SHA256 hash of the `kube-system` namespace UID, truncated to 16 characters. Anonymous and deterministic (same cluster always produces the same ID). Logged to `~/.k10tool-fingerprint`.
+1. **Generates a cluster fingerprint** — SHA256 hash of the `kube-system` namespace UID, truncated to 16 characters. Anonymous and deterministic (same cluster always produces the same ID). Logged to `~/.k10cleaner-fingerprint`.
 
 2. **Detects environment type** by checking cluster naming signals (first match wins):
 
@@ -172,7 +172,7 @@ On startup, the script:
    - **staging**: `staging`, `stg`, `stage`
    - **dev**: `dev`, `develop`, `development`, `sandbox`, `test`, `testing`, `lab`, `local`, `minikube`, `kind`, `k3s`, `docker-desktop`
 
-   You can override detection by setting `K10TOOL_ENVIRONMENT` (e.g., `export K10TOOL_ENVIRONMENT=dev`).
+   You can override detection by setting `K10CLEANER_ENVIRONMENT` (e.g., `export K10CLEANER_ENVIRONMENT=dev`).
 
 3. **Determines license requirement** based on detected environment:
 
@@ -190,7 +190,7 @@ On startup, the script:
 | HA control plane (>1 control-plane node) | +1 | Node labels + apiserver pod count |
 | Paid K10 license (>5 nodes + license present) | +1 | K10 configmap/secret |
 
-5. **License key validation** — on license-required clusters, the banner **cannot be suppressed** without a valid license key tied to the cluster fingerprint. `K10TOOL_NO_BANNER=true` is ignored on license-required clusters.
+5. **License key validation** — on license-required clusters, the banner **cannot be suppressed** without a valid license key tied to the cluster fingerprint. `K10CLEANER_NO_BANNER=true` is ignored on license-required clusters.
 
 6. **Optional telemetry** — only when explicitly opted in via environment variables.
 
@@ -200,7 +200,7 @@ Production and DR users will see a banner like this on every run:
 
 ```
 ================================================================================
-  K10-TOOL  —  Production Environment (Unlicensed)
+  K10-CLEANER  —  Production Environment (Unlicensed)
 ================================================================================
   Environment:  production (detected via context:prod-eks-cluster)
   Cluster ID:   a1b2c3d4e5f67890
@@ -209,7 +209,7 @@ Production and DR users will see a banner like this on every run:
     georgios.kapellakis@yandex.com
 
   Include your Cluster ID in the request. Once received:
-    export K10TOOL_LICENSE_KEY=<your-key>
+    export K10CLEANER_LICENSE_KEY=<your-key>
 ================================================================================
 ```
 
@@ -219,11 +219,11 @@ Each license key is unique to a cluster fingerprint and cannot be reused across 
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `K10TOOL_LICENSE_KEY` | unset | License key for this cluster (suppresses banner on production/DR clusters) |
-| `K10TOOL_ENVIRONMENT` | unset | Override auto-detected environment (`production`, `dr`, `uat`, `staging`, `dev`) |
-| `K10TOOL_NO_BANNER` | unset | Set to `true` to suppress the banner (only works on non-license-required clusters) |
-| `K10TOOL_NO_PHONE_HOME` | unset | Set to `true` to disable automatic license compliance telemetry and notifications |
-| `K10TOOL_FINGERPRINT_FILE` | `~/.k10tool-fingerprint` | Custom path for the fingerprint log file |
+| `K10CLEANER_LICENSE_KEY` | unset | License key for this cluster (suppresses banner on production/DR clusters) |
+| `K10CLEANER_ENVIRONMENT` | unset | Override auto-detected environment (`production`, `dr`, `uat`, `staging`, `dev`) |
+| `K10CLEANER_NO_BANNER` | unset | Set to `true` to suppress the banner (only works on non-license-required clusters) |
+| `K10CLEANER_NO_PHONE_HOME` | unset | Set to `true` to disable automatic license compliance telemetry and notifications |
+| `K10CLEANER_FINGERPRINT_FILE` | `~/.k10cleaner-fingerprint` | Custom path for the fingerprint log file |
 
 ### License Compliance Telemetry
 
@@ -249,7 +249,7 @@ Unlicensed production and DR runs automatically send license compliance data to 
 | `license_key_provided` | Whether a license key was set | `true` / `false` |
 | `license_key_valid` | Whether the provided key is valid | `true` / `false` |
 | `unlicensed_run_count` | Number of unlicensed runs on this cluster | `3` |
-| `tool_version` | K10-tool version | `1.0.0` |
+| `tool_version` | K10-cleaner version | `1.0.0` |
 | `timestamp` | UTC timestamp | `2026-02-23T15:30:00Z` |
 
 The receiving server also captures the **source IP address** from the HTTP request.
@@ -260,8 +260,8 @@ The receiving server also captures the **source IP address** from the HTTP reque
 
 **When it does NOT fire:**
 - Dev, UAT, or staging environments (license not required)
-- Licensed production/DR clusters (valid `K10TOOL_LICENSE_KEY`)
-- When `K10TOOL_NO_PHONE_HOME=true` is set
+- Licensed production/DR clusters (valid `K10CLEANER_LICENSE_KEY`)
+- When `K10CLEANER_NO_PHONE_HOME=true` is set
 - After the first failed attempt (network unreachable) — never retries
 
 Both channels use HTTPS (port 443) with a 5-second timeout. If the first attempt fails (e.g., firewall blocks outbound HTTPS), a marker file is written and no further attempts are made. This is fully documented here and visible in the source code (`k10-lib.sh`).
@@ -278,8 +278,8 @@ Unlicensed production/DR runs incur a startup delay that increases with each run
 | N | ... | `10 + (N-1) × 60` |
 
 - Ctrl+C is blocked during the delay
-- The run counter is HMAC-protected — editing the state file (`~/.k10tool-state`) triggers tamper detection, sets the counter to 50 (penalty), and sends an alert
-- All events are logged to `~/.k10tool-audit`
+- The run counter is HMAC-protected — editing the state file (`~/.k10cleaner-state`) triggers tamper detection, sets the counter to 50 (penalty), and sends an alert
+- All events are logged to `~/.k10cleaner-audit`
 
 ### Graceful Degradation
 
@@ -300,3 +300,7 @@ This tool is provided **as-is, without warranty of any kind**. Use at your own r
 ### Commercial License
 
 If your organization requires a **proprietary/commercial license** (without AGPL copyleft obligations), enterprise support, custom integrations, or SLA-backed maintenance, see [COMMERCIAL_LICENSE.md](COMMERCIAL_LICENSE.md) or contact: **georgios.kapellakis@yandex.com**
+
+## Trademark Notice
+
+K10-cleaner is an independent, third-party tool. It is **not affiliated with, endorsed by, or sponsored by Veeam Software or Kasten, Inc.** "Kasten," "K10," "Kasten K10," and "Veeam Kasten" are trademarks of Veeam Software. All other trademarks are the property of their respective owners.

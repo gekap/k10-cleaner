@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-K10-TOOL License Compliance Receiver
+K10-CLEANER License Compliance Receiver
 
-Receives telemetry from unlicensed production/DR k10-tool runs,
+Receives telemetry from unlicensed production/DR k10-cleaner runs,
 logs the payload + source IP, and forwards alerts to Telegram.
 
 Zero external dependencies — uses only Python standard library.
@@ -73,7 +73,7 @@ def send_telegram(entry):
     }.get(event, "\u26a0\ufe0f")               # warning
 
     text = (
-        f"{icon} <b>K10-TOOL License Alert</b>\n"
+        f"{icon} <b>K10-CLEANER License Alert</b>\n"
         f"\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501"
         f"\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501"
         f"\u2501\u2501\n"

@@ -1,16 +1,16 @@
 # Commercial License
 
-K10-tool is open source under the [GNU Affero General Public License v3.0 (AGPL-3.0)](LICENSE).
+K10-cleaner is open source under the [GNU Affero General Public License v3.0 (AGPL-3.0)](LICENSE).
 
 ## When do you need a commercial license?
 
-The AGPL-3.0 requires that any modifications, derivative works, or software that incorporates K10-tool must also be released under AGPL-3.0 — including when used to provide a network service.
+The AGPL-3.0 requires that any modifications, derivative works, or software that incorporates K10-cleaner must also be released under AGPL-3.0 — including when used to provide a network service.
 
 A **commercial license** is required if your organization:
 
-- Uses a modified version of K10-tool without publishing the source code
-- Integrates K10-tool into proprietary software or internal platforms
-- Offers K10-tool (or a derivative) as part of a managed service or product
+- Uses a modified version of K10-cleaner without publishing the source code
+- Integrates K10-cleaner into proprietary software or internal platforms
+- Offers K10-cleaner (or a derivative) as part of a managed service or product
 - Has a corporate policy that prohibits AGPL-licensed software
 
 ## What's included
