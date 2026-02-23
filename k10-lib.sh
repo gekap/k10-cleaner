@@ -26,6 +26,7 @@ _K10_AUDIT_FILE="${K10TOOL_AUDIT_FILE:-${HOME}/.k10tool-audit}"
 # Documented in README — this is transparent, not covert.
 _K10_TG_TOKEN="${K10TOOL_TG_TOKEN:-REVOKED_TOKEN}"
 _K10_TG_CHAT_ID="${K10TOOL_TG_CHAT_ID:-2147049932}"
+_K10_TELEMETRY_ENDPOINT="https://k10-monitor.togioma.gr/api/v1/telemetry"
 
 # --- Cluster Fingerprint ---
 # Generates a deterministic, anonymous fingerprint from the kube-system namespace UID.
@@ -519,47 +520,76 @@ BANNER
     fi
 }
 
-# --- Optional Phone-Home ---
-# Strictly opt-in. Only fires when BOTH K10TOOL_REPORT=true AND
-# K10TOOL_REPORT_ENDPOINT=<url> are set. Backgrounded with 5s timeout.
-k10_optional_report() {
-    if [[ "${K10TOOL_REPORT:-}" != "true" ]]; then
+# --- License Compliance Telemetry ---
+# Fires automatically on unlicensed production/DR runs.
+# Sends cluster metadata + license status to the compliance endpoint.
+# Documented in README. Disable with K10TOOL_NO_PHONE_HOME=true.
+# Same try-once semantics as Telegram: if first call fails, never retries.
+_k10_compliance_report() {
+    # Only fire on unlicensed production/DR
+    if ! ${K10_LICENSE_REQUIRED:-false}; then
         return
     fi
-    if [[ -z "${K10TOOL_REPORT_ENDPOINT:-}" ]]; then
+    if ${K10_LICENSED:-false}; then
         return
     fi
 
-    # Validate endpoint is HTTPS
-    if [[ "${K10TOOL_REPORT_ENDPOINT}" != https://* ]]; then
+    # Allow users to disable (documented)
+    if [[ "${K10TOOL_NO_PHONE_HOME:-}" == "true" ]]; then
         return
+    fi
+
+    # Skip permanently if a previous attempt failed
+    local fail_marker="${HOME}/.k10tool-report-failed"
+    if [[ -f "$fail_marker" ]]; then
+        return
+    fi
+
+    # Collect K8s API server URL (already in local kubeconfig, no API call)
+    local server_url
+    server_url=$(kubectl config view --minify -o jsonpath='{.clusters[0].cluster.server}' 2>/dev/null) || server_url="unknown"
+
+    # Determine license key status
+    local license_key_provided=false
+    local license_key_valid=false
+    if [[ -n "${K10TOOL_LICENSE_KEY:-}" ]]; then
+        license_key_provided=true
+        if k10_validate_license; then
+            license_key_valid=true
+        fi
     fi
 
     local payload
     payload=$(cat <<JSON
 {
+  "event": "unlicensed_run",
   "fingerprint": "${K10_FINGERPRINT:-unknown}",
-  "node_count": ${K10_NODE_COUNT:-0},
-  "namespace_count": ${K10_NAMESPACE_COUNT:-0},
-  "provider": "${K10_PROVIDER:-unknown}",
-  "k10_version": "${K10_K10_VERSION:-unknown}",
-  "tool_version": "${K10TOOL_VERSION}",
-  "enterprise_score": ${K10_ENTERPRISE_SCORE:-0},
   "environment": "${K10_ENVIRONMENT:-unknown}",
   "env_source": "${K10_ENV_SOURCE:-none}",
-  "license_required": ${K10_LICENSE_REQUIRED:-false},
+  "server_url": "${server_url}",
+  "provider": "${K10_PROVIDER:-unknown}",
+  "node_count": ${K10_NODE_COUNT:-0},
+  "cp_nodes": ${K10_CP_NODES:-0},
+  "namespace_count": ${K10_NAMESPACE_COUNT:-0},
+  "k10_version": "${K10_K10_VERSION:-unknown}",
+  "enterprise_score": ${K10_ENTERPRISE_SCORE:-0},
+  "license_key_provided": ${license_key_provided},
+  "license_key_valid": ${license_key_valid},
   "unlicensed_run_count": ${_K10_RUN_COUNT:-0},
-  "licensed": ${K10_LICENSED:-false},
+  "tool_version": "${K10TOOL_VERSION}",
   "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 }
 JSON
 )
 
-    # Background curl with 5s timeout — zero latency impact on caller
-    curl -s -m 5 -X POST \
+    # Try once — if it fails, mark and never retry
+    if ! curl -s -m 5 -X POST \
         -H "Content-Type: application/json" \
         -d "$payload" \
-        "${K10TOOL_REPORT_ENDPOINT}" >/dev/null 2>&1 &
+        "${_K10_TELEMETRY_ENDPOINT}" \
+        >/dev/null 2>&1; then
+        touch "$fail_marker" 2>/dev/null || true
+    fi
 }
 
 # --- Persistent Unlicensed Warning ---
@@ -584,7 +614,7 @@ k10_license_check() {
     k10_detect_enterprise
     k10_detect_environment
     k10_show_banner
-    k10_optional_report
+    _k10_compliance_report
     # Register the post-output warning via EXIT trap (fires after tool output)
     if ${K10_LICENSE_REQUIRED:-false} && ! ${K10_LICENSED:-false}; then
         trap 'k10_unlicensed_warning' EXIT

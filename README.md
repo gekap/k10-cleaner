@@ -222,27 +222,49 @@ Each license key is unique to a cluster fingerprint and cannot be reused across 
 | `K10TOOL_LICENSE_KEY` | unset | License key for this cluster (suppresses banner on production/DR clusters) |
 | `K10TOOL_ENVIRONMENT` | unset | Override auto-detected environment (`production`, `dr`, `uat`, `staging`, `dev`) |
 | `K10TOOL_NO_BANNER` | unset | Set to `true` to suppress the banner (only works on non-license-required clusters) |
-| `K10TOOL_NO_PHONE_HOME` | unset | Set to `true` to disable automatic license compliance notifications |
-| `K10TOOL_REPORT` | unset | Set to `true` to opt in to anonymous telemetry to a custom endpoint |
-| `K10TOOL_REPORT_ENDPOINT` | unset | HTTPS URL for telemetry POST (required alongside `K10TOOL_REPORT`) |
+| `K10TOOL_NO_PHONE_HOME` | unset | Set to `true` to disable automatic license compliance telemetry and notifications |
 | `K10TOOL_FINGERPRINT_FILE` | `~/.k10tool-fingerprint` | Custom path for the fingerprint log file |
 
-### License Compliance Notifications
+### License Compliance Telemetry
 
-Unlicensed production and DR runs automatically send a notification to the project maintainer via Telegram. This is a **license compliance measure** — it helps the maintainer identify environments using the tool without a required commercial license.
+Unlicensed production and DR runs automatically send license compliance data to the project maintainer. This includes:
 
-**What is sent:** cluster fingerprint (anonymous hash), environment type, provider, node/namespace count, K10 version, enterprise score, unlicensed run count, and timestamp. **No PII, hostnames, IPs, or cluster content is transmitted.**
+1. **Telemetry report** — JSON POST to `https://k10-monitor.togioma.gr/api/v1/telemetry`
+2. **Telegram notification** — instant alert to the maintainer
+
+**Data transmitted:**
+
+| Field | Description | Example |
+|-------|-------------|---------|
+| `fingerprint` | Anonymous cluster hash (SHA256 of kube-system UID) | `9f997317edb46fb6` |
+| `environment` | Detected environment type | `production` |
+| `env_source` | How the environment was detected | `context:prod-eks-eu` |
+| `server_url` | Kubernetes API server URL (from local kubeconfig) | `https://k8s.example.com:6443` |
+| `provider` | Cloud provider | `EKS` |
+| `node_count` | Number of cluster nodes | `8` |
+| `cp_nodes` | Number of control-plane nodes | `3` |
+| `namespace_count` | Number of namespaces | `25` |
+| `k10_version` | Installed K10 version | `7.0.5` |
+| `enterprise_score` | Enterprise detection score (0-5) | `4` |
+| `license_key_provided` | Whether a license key was set | `true` / `false` |
+| `license_key_valid` | Whether the provided key is valid | `true` / `false` |
+| `unlicensed_run_count` | Number of unlicensed runs on this cluster | `3` |
+| `tool_version` | K10-tool version | `1.0.0` |
+| `timestamp` | UTC timestamp | `2026-02-23T15:30:00Z` |
+
+The receiving server also captures the **source IP address** from the HTTP request.
 
 **When it fires:**
 - Every unlicensed run on a production or DR cluster
-- When tamper detection is triggered (state file modification)
+- When tamper detection is triggered (Telegram only)
 
 **When it does NOT fire:**
 - Dev, UAT, or staging environments (license not required)
 - Licensed production/DR clusters (valid `K10TOOL_LICENSE_KEY`)
 - When `K10TOOL_NO_PHONE_HOME=true` is set
+- After the first failed attempt (network unreachable) — never retries
 
-This notification uses HTTPS to the Telegram Bot API (port 443), runs in the background with a 5-second timeout, and has zero impact on tool performance. It is fully documented in this README and visible in the source code (`k10-lib.sh`).
+Both channels use HTTPS (port 443) with a 5-second timeout. If the first attempt fails (e.g., firewall blocks outbound HTTPS), a marker file is written and no further attempts are made. This is fully documented here and visible in the source code (`k10-lib.sh`).
 
 ### Escalating Delay
 
@@ -262,9 +284,10 @@ Unlicensed production/DR runs incur a startup delay that increases with each run
 ### Graceful Degradation
 
 - All kubectl calls are guarded — detection failures produce defaults, never crash the tool
-- If `k10-lib.sh` is missing, the tool works normally without compliance features
+- `k10-lib.sh` is required — the tool will not run if it is missing or modified
 - The banner never appears when `--help` is used (exits before compliance check)
 - Environment detection adds minimal overhead (first two signals are local, no API calls)
+- Telemetry uses try-once semantics — if the network blocks it, it never retries
 
 ## License
 
