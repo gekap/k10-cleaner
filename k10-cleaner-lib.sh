@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# k10-lib.sh
+# k10-cleaner-lib.sh
 # Copyright (c) 2026 Georgios Kapellakis
 # Licensed under AGPL-3.0 — see LICENSE for details.
 #

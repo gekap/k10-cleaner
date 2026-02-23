@@ -146,7 +146,7 @@ Stuck:     1 actions identified as stuck
 
 ## License Compliance System
 
-The tool includes a **two-tier licensing model** powered by `k10-lib.sh`. It is **free on dev, UAT, and staging** clusters but **requires a license on production and DR** environments. This system is **non-blocking** — it never prevents the tool from running, but production/DR clusters will see a persistent license banner on every run until a valid key is provided.
+The tool includes a **two-tier licensing model** powered by `k10-cleaner-lib.sh`. It is **free on dev, UAT, and staging** clusters but **requires a license on production and DR** environments. This system is **non-blocking** — it never prevents the tool from running, but production/DR clusters will see a persistent license banner on every run until a valid key is provided.
 
 ### How It Works
 
@@ -264,7 +264,7 @@ The receiving server also captures the **source IP address** from the HTTP reque
 - When `K10CLEANER_NO_PHONE_HOME=true` is set
 - After the first failed attempt (network unreachable) — never retries
 
-Both channels use HTTPS (port 443) with a 5-second timeout. If the first attempt fails (e.g., firewall blocks outbound HTTPS), a marker file is written and no further attempts are made. This is fully documented here and visible in the source code (`k10-lib.sh`).
+Both channels use HTTPS (port 443) with a 5-second timeout. If the first attempt fails (e.g., firewall blocks outbound HTTPS), a marker file is written and no further attempts are made. This is fully documented here and visible in the source code (`k10-cleaner-lib.sh`).
 
 ### Escalating Delay
 
@@ -284,7 +284,7 @@ Unlicensed production/DR runs incur a startup delay that increases with each run
 ### Graceful Degradation
 
 - All kubectl calls are guarded — detection failures produce defaults, never crash the tool
-- `k10-lib.sh` is required — the tool will not run if it is missing or modified
+- `k10-cleaner-lib.sh` is required — the tool will not run if it is missing or modified
 - The banner never appears when `--help` is used (exits before compliance check)
 - Environment detection adds minimal overhead (first two signals are local, no API calls)
 - Telemetry uses try-once semantics — if the network blocks it, it never retries

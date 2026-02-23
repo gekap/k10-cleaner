@@ -131,22 +131,22 @@ MAX_AGE_HOURS=$(( MAX_AGE_SECONDS / 3600 ))
 NAMESPACE="kasten-io"
 
 # Source shared compliance library — required for operation.
-# The tool will not run without k10-lib.sh to prevent license bypass.
+# The tool will not run without k10-cleaner-lib.sh to prevent license bypass.
 K10LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 _K10LIB_EXPECTED_SIG="k10cleaner-agpl3-commercial-2026"
 
-if [[ ! -f "${K10LIB_DIR}/k10-lib.sh" ]]; then
-    echo "Error: k10-lib.sh not found in ${K10LIB_DIR}." >&2
+if [[ ! -f "${K10LIB_DIR}/k10-cleaner-lib.sh" ]]; then
+    echo "Error: k10-cleaner-lib.sh not found in ${K10LIB_DIR}." >&2
     echo "This file is required. Re-download the tool from the official repository." >&2
     echo "Repository: https://github.com/gekap/k10-cleaner" >&2
     exit 1
 fi
 
-source "${K10LIB_DIR}/k10-lib.sh"
+source "${K10LIB_DIR}/k10-cleaner-lib.sh"
 
 # Verify the library has not been gutted (check for the license secret marker)
 if [[ "${K10CLEANER_LICENSE_SECRET:-}" != "$_K10LIB_EXPECTED_SIG" ]]; then
-    echo "Error: k10-lib.sh integrity check failed — file appears modified." >&2
+    echo "Error: k10-cleaner-lib.sh integrity check failed — file appears modified." >&2
     echo "Re-download the tool from the official repository." >&2
     echo "Repository: https://github.com/gekap/k10-cleaner" >&2
     exit 1
