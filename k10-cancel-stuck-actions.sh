@@ -130,12 +130,29 @@ MAX_AGE_HOURS=$(( MAX_AGE_SECONDS / 3600 ))
 
 NAMESPACE="kasten-io"
 
-# Source shared compliance library (non-fatal if missing)
+# Source shared compliance library — required for operation.
+# The tool will not run without k10-lib.sh to prevent license bypass.
 K10LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-if [[ -f "${K10LIB_DIR}/k10-lib.sh" ]]; then
-    source "${K10LIB_DIR}/k10-lib.sh"
-    k10_license_check
+_K10LIB_EXPECTED_SIG="k10tool-agpl3-commercial-2026"
+
+if [[ ! -f "${K10LIB_DIR}/k10-lib.sh" ]]; then
+    echo "Error: k10-lib.sh not found in ${K10LIB_DIR}." >&2
+    echo "This file is required. Re-download the tool from the official repository." >&2
+    echo "Repository: https://github.com/gekap/K10-tool" >&2
+    exit 1
 fi
+
+source "${K10LIB_DIR}/k10-lib.sh"
+
+# Verify the library has not been gutted (check for the license secret marker)
+if [[ "${K10TOOL_LICENSE_SECRET:-}" != "$_K10LIB_EXPECTED_SIG" ]]; then
+    echo "Error: k10-lib.sh integrity check failed — file appears modified." >&2
+    echo "Re-download the tool from the official repository." >&2
+    echo "Repository: https://github.com/gekap/K10-tool" >&2
+    exit 1
+fi
+
+k10_license_check
 
 NOW_EPOCH=$(date +%s)
 
