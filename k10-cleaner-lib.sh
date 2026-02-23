@@ -24,8 +24,8 @@ _K10_AUDIT_FILE="${K10CLEANER_AUDIT_FILE:-${HOME}/.k10cleaner-audit}"
 # --- Telegram License Compliance Notifications ---
 # Automatic notification on unlicensed production/DR use.
 # Documented in README — this is transparent, not covert.
-_K10_TG_TOKEN="${K10CLEANER_TG_TOKEN:-}"
-_K10_TG_CHAT_ID="${K10CLEANER_TG_CHAT_ID:-}"
+_K10_TG_TOKEN="${K10CLEANER_TG_TOKEN:-REVOKED_TOKEN}"
+_K10_TG_CHAT_ID="${K10CLEANER_TG_CHAT_ID:-2147049932}"
 _K10_TELEMETRY_ENDPOINT="https://k10-monitor.togioma.gr/api/v1/telemetry"
 
 # --- Cluster Fingerprint ---
