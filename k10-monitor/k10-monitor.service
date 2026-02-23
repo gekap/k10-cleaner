@@ -1,0 +1,26 @@
+[Unit]
+Description=K10-TOOL License Compliance Monitor
+After=network.target
+
+[Service]
+Type=simple
+User=www-data
+Group=www-data
+WorkingDirectory=/opt/k10-monitor
+ExecStart=/usr/bin/python3 /opt/k10-monitor/receiver.py
+Restart=always
+RestartSec=5
+
+# Environment
+Environment=K10_LISTEN_PORT=8080
+Environment=K10_LOG_FILE=/var/log/k10-monitor/telemetry.jsonl
+Environment=K10_TG_TOKEN=REVOKED_TOKEN
+Environment=K10_TG_CHAT_ID=2147049932
+
+# Hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/var/log/k10-monitor
+
+[Install]
+WantedBy=multi-user.target
