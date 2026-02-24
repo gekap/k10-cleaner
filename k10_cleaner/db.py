@@ -11,9 +11,9 @@ import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
-_LICENSE_SECRET = "k10cleaner-agpl3-commercial-2026"
+_OLD_HMAC_SECRET = "k10cleaner-agpl3-commercial-2026"  # v1 migration only
 
-_SCHEMA_VERSION = 1
+_SCHEMA_VERSION = 2
 
 _SCHEMA_SQL = """\
 CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);
@@ -80,6 +80,7 @@ class K10Database:
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA foreign_keys=ON")
         self._init_schema()
+        self._ensure_run_counter_secret()
         self._seed_config()
         self._migrate_legacy()
 
@@ -108,11 +109,41 @@ class K10Database:
         self._conn.commit()
 
     def _upgrade_schema(self, cur, from_version: int):
-        """Run incremental schema migrations. Add new blocks as schema evolves."""
-        # Example for future use:
-        # if from_version < 2:
-        #     cur.execute("ALTER TABLE ...")
-        pass
+        """Run incremental schema migrations."""
+        if from_version < 2:
+            # v1→v2: switch run-counter HMAC from hardcoded secret to per-install random
+            new_secret = os.urandom(32).hex()
+            cur.execute(
+                "INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)",
+                ("run_counter_secret", new_secret),
+            )
+            rows = cur.execute(
+                "SELECT fingerprint, run_count, hmac FROM run_state"
+            ).fetchall()
+            for fp, count, stored_hmac in rows:
+                expected = compute_hmac(_OLD_HMAC_SECRET, f"{fp}:{count}")
+                if not _hmac.compare_digest(stored_hmac, expected):
+                    count = max(50, min(count, 100))
+                new_hmac = compute_hmac(new_secret, f"{fp}:{count}")
+                cur.execute(
+                    "UPDATE run_state SET run_count = ?, hmac = ? WHERE fingerprint = ?",
+                    (count, new_hmac, fp),
+                )
+
+    def _ensure_run_counter_secret(self):
+        """Generate or load the per-installation random secret for run-counter HMAC."""
+        row = self._conn.execute(
+            "SELECT value FROM config WHERE key = ?", ("run_counter_secret",)
+        ).fetchone()
+        if row:
+            self._run_secret = row[0]
+        else:
+            self._run_secret = os.urandom(32).hex()
+            self._conn.execute(
+                "INSERT INTO config (key, value) VALUES (?, ?)",
+                ("run_counter_secret", self._run_secret),
+            )
+            self._conn.commit()
 
     def _seed_config(self):
         """Insert default config values if they don't already exist."""
@@ -178,11 +209,11 @@ class K10Database:
                     except ValueError:
                         continue
                     # Validate legacy HMAC before trusting the count
-                    expected_hmac = compute_hmac(_LICENSE_SECRET, f"{fp}:{count}")
+                    expected_hmac = compute_hmac(_OLD_HMAC_SECRET, f"{fp}:{count}")
                     if not _hmac.compare_digest(stored_hmac, expected_hmac):
                         # Tampered legacy file — apply penalty
                         count = max(50, min(count, 100))
-                    new_hmac = compute_hmac(_LICENSE_SECRET, f"{fp}:{count}")
+                    new_hmac = compute_hmac(self._run_secret, f"{fp}:{count}")
                     self._conn.execute(
                         "INSERT OR IGNORE INTO run_state (fingerprint, run_count, hmac) VALUES (?, ?, ?)",
                         (fp, count, new_hmac),
@@ -282,7 +313,7 @@ class K10Database:
 
         stored_count, stored_hmac = row
         expected_hmac = compute_hmac(
-            _LICENSE_SECRET, f"{fingerprint}:{stored_count}"
+            self._run_secret, f"{fingerprint}:{stored_count}"
         )
 
         if not _hmac.compare_digest(stored_hmac, expected_hmac):
@@ -300,7 +331,7 @@ class K10Database:
         return stored_count
 
     def write_run_count(self, fingerprint: str, count: int):
-        new_hmac = compute_hmac(_LICENSE_SECRET, f"{fingerprint}:{count}")
+        new_hmac = compute_hmac(self._run_secret, f"{fingerprint}:{count}")
         self._conn.execute("BEGIN IMMEDIATE")
         try:
             self._conn.execute(
@@ -327,7 +358,7 @@ class K10Database:
             else:
                 stored_count, stored_hmac = row
                 expected = compute_hmac(
-                    _LICENSE_SECRET, f"{fingerprint}:{stored_count}"
+                    self._run_secret, f"{fingerprint}:{stored_count}"
                 )
                 if not _hmac.compare_digest(stored_hmac, expected):
                     new_count = max(50, min(stored_count, 100)) + 1
@@ -335,7 +366,7 @@ class K10Database:
                     new_count = stored_count + 1
 
             new_hmac = compute_hmac(
-                _LICENSE_SECRET, f"{fingerprint}:{new_count}"
+                self._run_secret, f"{fingerprint}:{new_count}"
             )
             self._conn.execute(
                 "INSERT INTO run_state (fingerprint, run_count, hmac) VALUES (?, ?, ?) "

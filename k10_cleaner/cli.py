@@ -8,7 +8,6 @@
 from __future__ import annotations
 
 import argparse
-import hmac as _hmac
 import re
 import sys
 import time
@@ -795,8 +794,7 @@ def main():
             print("Error: could not determine cluster fingerprint (is kubectl configured?)", file=sys.stderr)
             sys.exit(1)
         db.set_config("license_key", args.license_key)
-        expected = compliance.generate_key(fp)
-        if _hmac.compare_digest(args.license_key, expected):
+        if compliance.validate_license():
             print(f"License key saved and validated for cluster {fp}")
             print("The banner and delay will no longer appear on this cluster.")
         else:

@@ -20,6 +20,7 @@ test-compliance.sh
 
 # Sensitive
 access.txt
+*.pem
 
 # RBAC manifests
 k10-clusterrole.yaml

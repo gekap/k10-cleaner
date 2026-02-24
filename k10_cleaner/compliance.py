@@ -8,8 +8,8 @@
 from __future__ import annotations
 
 import atexit
+import base64
 import hashlib
-import hmac as _hmac
 import os
 import re
 import signal
@@ -24,7 +24,43 @@ from . import VERSION
 from .db import K10Database
 from .kubectl import Kubectl
 
-_LICENSE_SECRET = "k10cleaner-agpl3-commercial-2026"
+_LICENSE_PUBLIC_KEY_HEX = "2530cc7dd44d956df636564d70d100656e84cb9a6d970b29f63cb08e02a98753"
+
+
+def _verify_license_signature(fingerprint: str, license_key: str) -> bool:
+    """Verify a ``k10-<base64url>`` license key against a cluster fingerprint."""
+    if not license_key.startswith("k10-"):
+        return False
+    encoded = license_key[4:]
+    encoded += "=" * (-len(encoded) % 4)  # restore base64url padding
+    try:
+        sig_bytes = base64.urlsafe_b64decode(encoded)
+    except Exception:
+        return False
+    if len(sig_bytes) != 64:
+        return False
+
+    pub_key_bytes = bytes.fromhex(_LICENSE_PUBLIC_KEY_HEX)
+    message = fingerprint.encode()
+
+    # Try the C-backed cryptography library first (faster)
+    try:
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+
+        pk = Ed25519PublicKey.from_public_bytes(pub_key_bytes)
+        pk.verify(sig_bytes, message)
+        return True
+    except ImportError:
+        pass  # cryptography not installed — use pure-Python fallback
+    except Exception:
+        return False  # invalid signature or malformed key
+
+    # Pure-Python fallback (zero dependencies)
+    from .ed25519_verify import verify
+
+    return verify(pub_key_bytes, sig_bytes, message)
+
+
 _TELEMETRY_ENDPOINT = "https://k10-monitor.togioma.gr/api/v1/telemetry"
 
 # Pre-compiled environment classification patterns
@@ -293,14 +329,8 @@ class ComplianceEngine:
             info.license_required = info.enterprise_score >= 3
 
     # ------------------------------------------------------------------
-    # License key generation / validation
+    # License key validation (Ed25519 signature)
     # ------------------------------------------------------------------
-    @staticmethod
-    def generate_key(fingerprint: str) -> str:
-        return _hmac.new(
-            _LICENSE_SECRET.encode(), fingerprint.encode(), hashlib.sha256
-        ).hexdigest()[:32]
-
     def validate_license(self) -> bool:
         # Env var takes priority, then DB
         user_key = os.environ.get("K10CLEANER_LICENSE_KEY") or self._db.get_config("license_key")
@@ -309,8 +339,7 @@ class ComplianceEngine:
         fp = self.info.fingerprint
         if not fp or fp == "unknown":
             return False
-        expected = self.generate_key(fp)
-        return _hmac.compare_digest(user_key, expected)
+        return _verify_license_signature(fp, user_key)
 
     # ------------------------------------------------------------------
     # Telegram notification
