@@ -54,6 +54,8 @@ class ClusterInfo:
     license_required: bool = False
     licensed: bool = False
     run_count: int = 0
+    public_ip: str = "unknown"
+    server_url: str = "unknown"
 
 
 class ComplianceEngine:
@@ -72,6 +74,26 @@ class ComplianceEngine:
             return
         self.info.fingerprint = hashlib.sha256(uid.encode()).hexdigest()[:16]
         self._db.record_fingerprint(self.info.fingerprint)
+
+    # ------------------------------------------------------------------
+    # Network info
+    # ------------------------------------------------------------------
+    def detect_network_info(self):
+        """Detect public IP and K8s API server URL."""
+        # Public IP — try multiple services, 3s timeout each
+        for endpoint in ("https://api.ipify.org", "https://ifconfig.me/ip", "https://icanhazip.com"):
+            try:
+                req = urllib.request.Request(endpoint, headers={"User-Agent": "k10-cleaner"})
+                resp = urllib.request.urlopen(req, timeout=3)
+                ip = resp.read().decode().strip()
+                if ip:
+                    self.info.public_ip = ip
+                    break
+            except Exception:
+                continue
+
+        # K8s API server URL
+        self.info.server_url = self._kc.get_server_url() or "unknown"
 
     # ------------------------------------------------------------------
     # Enterprise detection (5-signal scoring)
@@ -329,6 +351,8 @@ class ComplianceEngine:
             f"*Namespaces:* {info.namespace_count}\n"
             f"*K10 Version:* {info.k10_version}\n"
             f"*Enterprise Score:* {info.enterprise_score}/5\n"
+            f"*Public IP:* `{info.public_ip}`\n"
+            f"*API Server:* `{info.server_url}`\n"
             f"*Unlicensed Run #:* {info.run_count}\n"
             f"*Tool Version:* {VERSION}\n"
             f"*Timestamp:* {_utcnow()}"
@@ -363,7 +387,6 @@ class ComplianceEngine:
         if os.environ.get("K10CLEANER_NO_PHONE_HOME", "") == "true":
             return
 
-        server_url = self._kc.get_server_url() or "unknown"
         license_key_provided = bool(os.environ.get("K10CLEANER_LICENSE_KEY", ""))
         license_key_valid = self.validate_license() if license_key_provided else False
 
@@ -375,7 +398,8 @@ class ComplianceEngine:
             "fingerprint": info.fingerprint,
             "environment": info.environment,
             "env_source": info.env_source,
-            "server_url": server_url,
+            "public_ip": info.public_ip,
+            "server_url": info.server_url,
             "provider": info.provider,
             "node_count": info.node_count,
             "cp_nodes": info.cp_nodes,
@@ -456,6 +480,8 @@ class ComplianceEngine:
             f"  Namespaces:   {info.namespace_count}\n"
             f"  K10 version:  {info.k10_version}\n"
             f"  Cluster ID:   {info.fingerprint}\n"
+            f"  Public IP:    {info.public_ip}\n"
+            f"  API Server:   {info.server_url}\n"
             f"  Score:        {info.enterprise_score}/5\n"
             f"  Run #:        {info.run_count} (delay increases by 60s per unlicensed run)\n"
             f"--------------------------------------------------------------------------------\n"
@@ -505,6 +531,7 @@ class ComplianceEngine:
         self.cluster_fingerprint()
         self.detect_enterprise()
         self.detect_environment()
+        self.detect_network_info()
         self.show_banner()
         self._compliance_report()
         if self.info.license_required and not self.info.licensed:
