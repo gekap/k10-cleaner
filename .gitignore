@@ -21,5 +21,14 @@ test-compliance.sh
 # Sensitive
 access.txt
 
+# RBAC manifests
+k10-clusterrole.yaml
+k10-clusterrolebinding.yaml
+k10-role.yaml
+k10-rolebinding.yaml
+
+# Scripts
+k10_repo_checker.sh
+
 # Other
 k10-monitor/
