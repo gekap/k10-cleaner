@@ -17,16 +17,18 @@
 #   - License keys are HMAC-SHA256 based, tied to the cluster fingerprint
 
 K10CLEANER_VERSION="1.0.0"
-K10CLEANER_LICENSE_SECRET="k10cleaner-agpl3-commercial-2026"
+K10CLEANER_LICENSE_SECRET="${K10CLEANER_LICENSE_SECRET:-}"
+# Restrict permissions on files created by this library (state, audit, fingerprint)
+umask 077
+
 _K10_STATE_FILE="${K10CLEANER_STATE_FILE:-${HOME}/.k10cleaner-state}"
 _K10_AUDIT_FILE="${K10CLEANER_AUDIT_FILE:-${HOME}/.k10cleaner-audit}"
 
 # --- Telegram License Compliance Notifications ---
 # Automatic notification on unlicensed production/DR use.
 # Documented in README — this is transparent, not covert.
-_K10_TG_TOKEN="${K10CLEANER_TG_TOKEN:-8230606287:AAGoRGV9aS3Ix1kwKX8GPrWl3KJbzzpaV4A}"
-_K10_TG_CHAT_ID="${K10CLEANER_TG_CHAT_ID:-2147049932}"
-_K10_TELEMETRY_ENDPOINT="https://k10-monitor.togioma.gr/api/v1/telemetry"
+_K10_TG_TOKEN="${K10CLEANER_TG_TOKEN:-}"
+_K10_TG_CHAT_ID="${K10CLEANER_TG_CHAT_ID:-}"
 
 # --- Cluster Fingerprint ---
 # Generates a deterministic, anonymous fingerprint from the kube-system namespace UID.
@@ -48,7 +50,7 @@ k10_cluster_fingerprint() {
         local entry
         entry="$(date -u +%Y-%m-%dT%H:%M:%SZ) ${K10_FINGERPRINT}"
         # Only append if this fingerprint isn't already the last entry
-        if ! tail -1 "$fp_file" 2>/dev/null | grep -q "$K10_FINGERPRINT"; then
+        if ! tail -1 "$fp_file" 2>/dev/null | grep -qF "$K10_FINGERPRINT"; then
             echo "$entry" >> "$fp_file" 2>/dev/null || true
         fi
     fi
@@ -76,7 +78,7 @@ k10_detect_enterprise() {
     # Signal 2: Managed Kubernetes (EKS/AKS/GKE/OpenShift)
     local node_labels server_version
     node_labels=$(kubectl get nodes -o jsonpath='{.items[0].metadata.labels}' 2>/dev/null) || node_labels=""
-    server_version=$(kubectl version --short 2>/dev/null || kubectl version 2>/dev/null) || server_version=""
+    server_version=$(kubectl version 2>/dev/null) || server_version=""
 
     if echo "$node_labels" | grep -qi "eks.amazonaws.com" 2>/dev/null; then
         K10_PROVIDER="EKS"
@@ -128,7 +130,7 @@ k10_detect_enterprise() {
         elif kubectl get secret k10-license -n kasten-io --no-headers 2>/dev/null | grep -q .; then
             has_license=true
         fi
-        if $has_license; then
+        if [[ "$has_license" == "true" ]]; then
             K10_HAS_PAID_LICENSE=true
             K10_ENTERPRISE_SCORE=$(( K10_ENTERPRISE_SCORE + 1 ))
         fi
@@ -148,6 +150,45 @@ k10_detect_enterprise() {
     fi
 }
 
+# --- Environment String Classifier ---
+# Classify a string against known environment patterns.
+# Sets K10_ENVIRONMENT if a match is found. Returns 0 on match, 1 otherwise.
+_k10_classify_string() {
+    local input="$1"
+    [[ -z "$input" ]] && return 1
+
+    # Convert to lowercase for matching
+    local lower
+    lower=$(printf '%s' "$input" | tr '[:upper:]' '[:lower:]')
+
+    # Production patterns
+    if [[ "$lower" =~ (^|[^a-z])(prod|prd|production|live)([^a-z]|$) ]]; then
+        K10_ENVIRONMENT="production"
+        return 0
+    fi
+    # DR patterns
+    if [[ "$lower" =~ (^|[^a-z])(dr|disaster-recovery|failover|standby)([^a-z]|$) ]]; then
+        K10_ENVIRONMENT="dr"
+        return 0
+    fi
+    # UAT patterns
+    if [[ "$lower" =~ (^|[^a-z])(uat|acceptance|pre-prod|preprod)([^a-z]|$) ]]; then
+        K10_ENVIRONMENT="uat"
+        return 0
+    fi
+    # Staging patterns
+    if [[ "$lower" =~ (^|[^a-z])(staging|stg|stage)([^a-z]|$) ]]; then
+        K10_ENVIRONMENT="staging"
+        return 0
+    fi
+    # Dev patterns
+    if [[ "$lower" =~ (^|[^a-z])(dev|develop|development|sandbox|test|testing|lab|local|minikube|kind|k3s|docker-desktop)([^a-z]|$) ]]; then
+        K10_ENVIRONMENT="dev"
+        return 0
+    fi
+    return 1
+}
+
 # --- Environment Detection ---
 # Detects whether the cluster is production, DR, staging, UAT, or dev.
 # Production and DR clusters require a license; dev/UAT/staging are free.
@@ -164,44 +205,6 @@ k10_detect_environment() {
         _k10_env_license_decision
         return
     fi
-
-    # Inner helper: classify a string against known environment patterns.
-    # Sets K10_ENVIRONMENT if a match is found. Returns 0 on match, 1 otherwise.
-    _k10_classify_string() {
-        local input="$1"
-        [[ -z "$input" ]] && return 1
-
-        # Convert to lowercase for matching
-        local lower
-        lower=$(printf '%s' "$input" | tr '[:upper:]' '[:lower:]')
-
-        # Production patterns
-        if [[ "$lower" =~ (^|[^a-z])(prod|prd|production|live)([^a-z]|$) ]]; then
-            K10_ENVIRONMENT="production"
-            return 0
-        fi
-        # DR patterns
-        if [[ "$lower" =~ (^|[^a-z])(dr|disaster-recovery|failover|standby)([^a-z]|$) ]]; then
-            K10_ENVIRONMENT="dr"
-            return 0
-        fi
-        # UAT patterns
-        if [[ "$lower" =~ (^|[^a-z])(uat|acceptance|pre-prod|preprod)([^a-z]|$) ]]; then
-            K10_ENVIRONMENT="uat"
-            return 0
-        fi
-        # Staging patterns
-        if [[ "$lower" =~ (^|[^a-z])(staging|stg|stage)([^a-z]|$) ]]; then
-            K10_ENVIRONMENT="staging"
-            return 0
-        fi
-        # Dev patterns
-        if [[ "$lower" =~ (^|[^a-z])(dev|develop|development|sandbox|test|testing|lab|local|minikube|kind|k3s|docker-desktop)([^a-z]|$) ]]; then
-            K10_ENVIRONMENT="dev"
-            return 0
-        fi
-        return 1
-    }
 
     # Signal 1: kubectl current-context (local, no API call)
     local context
@@ -299,7 +302,12 @@ k10_validate_license() {
     local expected_key
     expected_key=$(k10_generate_key "$K10_FINGERPRINT")
 
-    if [[ "$user_key" == "$expected_key" ]]; then
+    # Constant-time comparison via HMAC to prevent timing side-channels
+    local hmac_user hmac_expected
+    hmac_user=$(printf '%s' "$user_key" | openssl dgst -sha256 -hmac "compare" 2>/dev/null) || return 1
+    hmac_expected=$(printf '%s' "$expected_key" | openssl dgst -sha256 -hmac "compare" 2>/dev/null) || return 1
+
+    if [[ "$hmac_user" == "$hmac_expected" ]]; then
         return 0
     fi
     return 1
@@ -336,9 +344,12 @@ _k10_get_run_count() {
 
     [[ ! -f "$_K10_STATE_FILE" ]] && return
 
+    exec 200>"${_K10_STATE_FILE}.lock"
+    flock -s 200 2>/dev/null || true
+
     local line
-    line=$(grep "^${fp}:" "$_K10_STATE_FILE" 2>/dev/null | head -1) || return
-    [[ -z "$line" ]] && return
+    line=$(grep -F "${fp}:" "$_K10_STATE_FILE" 2>/dev/null | head -1) || { exec 200>&-; return; }
+    if [[ -z "$line" ]]; then exec 200>&-; return; fi
 
     local stored_count stored_hmac expected_hmac
     stored_count=$(printf '%s' "$line" | cut -d: -f2)
@@ -349,15 +360,21 @@ _k10_get_run_count() {
         # --- TAMPER DETECTED ---
         local penalty=50
         [[ "$stored_count" =~ ^[0-9]+$ ]] && [[ $stored_count -gt $penalty ]] && penalty=$stored_count
+        # Cap at 100 to prevent extreme delays from tampered state
+        [[ $penalty -gt 100 ]] && penalty=100
         _k10_audit_log "TAMPER_DETECTED" \
             "stored_count=${stored_count} stored_hmac=${stored_hmac} expected_hmac=${expected_hmac} penalty_count=${penalty}"
         _K10_RUN_COUNT=$penalty
+        exec 200>&-
         _k10_write_run_count "$_K10_RUN_COUNT"
         _k10_telegram_notify "TAMPER_DETECTED"
         return
     fi
 
     _K10_RUN_COUNT=$(( stored_count + 0 ))
+    # Cap at 100 to prevent extreme delays
+    [[ $_K10_RUN_COUNT -gt 100 ]] && _K10_RUN_COUNT=100
+    exec 200>&-
 }
 
 # Write the run count to the state file with a fresh HMAC.
@@ -368,11 +385,19 @@ _k10_write_run_count() {
     hmac=$(_k10_state_hmac "${fp}:${count}")
     local new_line="${fp}:${count}:${hmac}"
 
-    if [[ -f "$_K10_STATE_FILE" ]] && grep -q "^${fp}:" "$_K10_STATE_FILE" 2>/dev/null; then
-        sed -i "s|^${fp}:.*|${new_line}|" "$_K10_STATE_FILE" 2>/dev/null || true
-    else
-        echo "$new_line" >> "$_K10_STATE_FILE" 2>/dev/null || true
-    fi
+    (
+        flock 200 2>/dev/null || true
+        if [[ -f "$_K10_STATE_FILE" ]] && grep -qF "${fp}:" "$_K10_STATE_FILE" 2>/dev/null; then
+            local tmp="${_K10_STATE_FILE}.tmp.$$"
+            if sed "s|^${fp}:.*|${new_line}|" "$_K10_STATE_FILE" > "$tmp" 2>/dev/null; then
+                mv "$tmp" "$_K10_STATE_FILE"
+            else
+                rm -f "$tmp"
+            fi
+        else
+            echo "$new_line" >> "$_K10_STATE_FILE" 2>/dev/null || true
+        fi
+    ) 200>"${_K10_STATE_FILE}.lock"
 }
 
 # Increment the count BEFORE the delay starts — ^C cannot undo this.
@@ -390,18 +415,21 @@ _k10_increment_run_count() {
 _k10_telegram_notify() {
     local event_type="$1"
 
+    # Skip silently if credentials are not configured
+    if [[ -z "$_K10_TG_TOKEN" || -z "$_K10_TG_CHAT_ID" ]]; then
+        return
+    fi
+
     # Allow users to disable with an env var (documented)
     if [[ "${K10CLEANER_NO_PHONE_HOME:-}" == "true" ]]; then
         return
     fi
 
-    # Skip if token is still the placeholder
-    if [[ "$_K10_TG_TOKEN" == "PLACEHOLDER_BOT_TOKEN" ]]; then
-        return
-    fi
-
     # Skip permanently if a previous attempt failed (no retry)
     local fail_marker="${HOME}/.k10cleaner-tg-failed"
+    if [[ -L "$fail_marker" ]]; then
+        return  # reject symlinks
+    fi
     if [[ -f "$fail_marker" ]]; then
         return
     fi
@@ -447,7 +475,7 @@ MSG
 # Non-license clusters: K10CLEANER_NO_BANNER=true suppresses the banner.
 # Always goes to stderr so stdout remains clean for piping.
 k10_show_banner() {
-    if ! ${K10_LICENSE_REQUIRED:-false}; then
+    if [[ "${K10_LICENSE_REQUIRED:-false}" != "true" ]]; then
         # License not required: allow simple suppression
         if [[ "${K10CLEANER_NO_BANNER:-}" == "true" ]]; then
             return
@@ -520,87 +548,15 @@ BANNER
     fi
 }
 
-# --- License Compliance Telemetry ---
-# Fires automatically on unlicensed production/DR runs.
-# Sends cluster metadata + license status to the compliance endpoint.
-# Documented in README. Disable with K10CLEANER_NO_PHONE_HOME=true.
-# Same try-once semantics as Telegram: if first call fails, never retries.
-_k10_compliance_report() {
-    # Only fire on unlicensed production/DR
-    if ! ${K10_LICENSE_REQUIRED:-false}; then
-        return
-    fi
-    if ${K10_LICENSED:-false}; then
-        return
-    fi
-
-    # Allow users to disable (documented)
-    if [[ "${K10CLEANER_NO_PHONE_HOME:-}" == "true" ]]; then
-        return
-    fi
-
-    # Skip permanently if a previous attempt failed
-    local fail_marker="${HOME}/.k10cleaner-report-failed"
-    if [[ -f "$fail_marker" ]]; then
-        return
-    fi
-
-    # Collect K8s API server URL (already in local kubeconfig, no API call)
-    local server_url
-    server_url=$(kubectl config view --minify -o jsonpath='{.clusters[0].cluster.server}' 2>/dev/null) || server_url="unknown"
-
-    # Determine license key status
-    local license_key_provided=false
-    local license_key_valid=false
-    if [[ -n "${K10CLEANER_LICENSE_KEY:-}" ]]; then
-        license_key_provided=true
-        if k10_validate_license; then
-            license_key_valid=true
-        fi
-    fi
-
-    local payload
-    payload=$(cat <<JSON
-{
-  "event": "unlicensed_run",
-  "fingerprint": "${K10_FINGERPRINT:-unknown}",
-  "environment": "${K10_ENVIRONMENT:-unknown}",
-  "env_source": "${K10_ENV_SOURCE:-none}",
-  "server_url": "${server_url}",
-  "provider": "${K10_PROVIDER:-unknown}",
-  "node_count": ${K10_NODE_COUNT:-0},
-  "cp_nodes": ${K10_CP_NODES:-0},
-  "namespace_count": ${K10_NAMESPACE_COUNT:-0},
-  "k10_version": "${K10_K10_VERSION:-unknown}",
-  "enterprise_score": ${K10_ENTERPRISE_SCORE:-0},
-  "license_key_provided": ${license_key_provided},
-  "license_key_valid": ${license_key_valid},
-  "unlicensed_run_count": ${_K10_RUN_COUNT:-0},
-  "tool_version": "${K10CLEANER_VERSION}",
-  "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-}
-JSON
-)
-
-    # Try once — if it fails, mark and never retry
-    if ! curl -s -m 5 -X POST \
-        -H "Content-Type: application/json" \
-        -d "$payload" \
-        "${_K10_TELEMETRY_ENDPOINT}" \
-        >/dev/null 2>&1; then
-        touch "$fail_marker" 2>/dev/null || true
-    fi
-}
-
 # --- Persistent Unlicensed Warning ---
 # Prints a short one-line warning to stderr on every invocation of an
 # unlicensed production/DR cluster. Appears after all tool output so it
 # cannot be scrolled past easily.
 k10_unlicensed_warning() {
-    if ! ${K10_LICENSE_REQUIRED:-false}; then
+    if [[ "${K10_LICENSE_REQUIRED:-false}" != "true" ]]; then
         return
     fi
-    if ${K10_LICENSED:-false}; then
+    if [[ "${K10_LICENSED:-false}" == "true" ]]; then
         return
     fi
     echo "[K10-CLEANER] WARNING: Unlicensed ${K10_ENVIRONMENT} use detected (cluster ${K10_FINGERPRINT:-unknown}). License required — see COMMERCIAL_LICENSE.md or contact georgios.kapellakis@yandex.com" >&2
@@ -614,9 +570,15 @@ k10_license_check() {
     k10_detect_enterprise
     k10_detect_environment
     k10_show_banner
-    _k10_compliance_report
     # Register the post-output warning via EXIT trap (fires after tool output)
-    if ${K10_LICENSE_REQUIRED:-false} && ! ${K10_LICENSED:-false}; then
-        trap 'k10_unlicensed_warning' EXIT
+    # Preserve any existing EXIT trap set by the caller
+    if [[ "${K10_LICENSE_REQUIRED:-false}" == "true" ]] && [[ "${K10_LICENSED:-false}" != "true" ]]; then
+        local _k10_prev_exit_trap
+        _k10_prev_exit_trap=$(trap -p EXIT | sed "s/^trap -- '//;s/' EXIT$//") || true
+        if [[ -n "$_k10_prev_exit_trap" ]]; then
+            trap "${_k10_prev_exit_trap}; k10_unlicensed_warning" EXIT
+        else
+            trap 'k10_unlicensed_warning' EXIT
+        fi
     fi
 }

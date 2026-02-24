@@ -42,7 +42,7 @@ parse_duration() {
     unit="${unit,,}"  # lowercase
 
     if ! [[ "$num" =~ ^[0-9]+$ ]]; then
-        echo "Error: invalid duration '${dur}'" >&2
+        echo "Error: invalid duration '${dur}' (expected format: <number><h|d>, e.g. 24h, 2d)" >&2
         return 1
     fi
 
@@ -126,14 +126,17 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-MAX_AGE_HOURS=$(( MAX_AGE_SECONDS / 3600 ))
+# Compute display string for max age (show fractional hours if needed)
+if [[ $((MAX_AGE_SECONDS % 3600)) -eq 0 ]]; then
+    MAX_AGE_DISPLAY="$(( MAX_AGE_SECONDS / 3600 ))h"
+else
+    MAX_AGE_DISPLAY="$(awk "BEGIN { printf \"%.1fh\", ${MAX_AGE_SECONDS}/3600 }")"
+fi
 
 NAMESPACE="kasten-io"
 
 # Source shared compliance library — required for operation.
-# The tool will not run without k10-cleaner-lib.sh to prevent license bypass.
 K10LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-_K10LIB_EXPECTED_SIG="k10cleaner-agpl3-commercial-2026"
 
 if [[ ! -f "${K10LIB_DIR}/k10-cleaner-lib.sh" ]]; then
     echo "Error: k10-cleaner-lib.sh not found in ${K10LIB_DIR}." >&2
@@ -144,17 +147,7 @@ fi
 
 source "${K10LIB_DIR}/k10-cleaner-lib.sh"
 
-# Verify the library has not been gutted (check for the license secret marker)
-if [[ "${K10CLEANER_LICENSE_SECRET:-}" != "$_K10LIB_EXPECTED_SIG" ]]; then
-    echo "Error: k10-cleaner-lib.sh integrity check failed — file appears modified." >&2
-    echo "Re-download the tool from the official repository." >&2
-    echo "Repository: https://github.com/gekap/k10-cleaner" >&2
-    exit 1
-fi
-
 k10_license_check
-
-NOW_EPOCH=$(date +%s)
 
 # Bug #7: pre-flight connectivity check — fail fast instead of silently returning empty
 if ! kubectl get namespace "$NAMESPACE" > /dev/null 2>&1; then
@@ -214,9 +207,10 @@ declare -A ACTION_VERB_MAP=(
 # Bug #11: handle future timestamps from clock skew
 compute_age() {
     local timestamp="$1"
-    local epoch
+    local epoch now_epoch
     epoch=$(date -d "$timestamp" +%s 2>/dev/null) || return 1
-    local age=$((NOW_EPOCH - epoch))
+    now_epoch=$(date +%s)
+    local age=$((now_epoch - epoch))
     if [[ $age -lt 0 ]]; then
         echo "0"
     else
@@ -225,12 +219,12 @@ compute_age() {
 }
 
 # --- Check mode: policy status dashboard ---
-if $CHECK_MODE; then
+if [[ "$CHECK_MODE" == "true" ]]; then
     echo "=== K10 Policy Status Dashboard ==="
     echo ""
 
-    POLICIES_JSON=$(kubectl get policies.config.kio.kasten.io -n "$NAMESPACE" -o json 2>&1) || {
-        echo "Error: failed to list K10 policies: ${POLICIES_JSON}" >&2
+    POLICIES_JSON=$(kubectl get policies.config.kio.kasten.io -n "$NAMESPACE" -o json 2>/dev/null) || {
+        echo "Error: failed to list K10 policies" >&2
         exit 1
     }
     if [[ "$(echo "$POLICIES_JSON" | jq '.items | length')" == "0" ]]; then
@@ -300,7 +294,8 @@ if $CHECK_MODE; then
         LATEST_STATUS=""
         LATEST_ERROR=""
 
-        for ACT_VERB in $(echo "$POLICY" | jq -r '.spec.actions[].action // empty'); do
+        while IFS= read -r ACT_VERB; do
+            [[ -z "$ACT_VERB" ]] && continue
             RESOURCE="${ACTION_VERB_MAP[$ACT_VERB]:-}"
             [[ -z "$RESOURCE" ]] && continue
 
@@ -315,18 +310,20 @@ if $CHECK_MODE; then
                 ACT_TIME=$(echo "$LATEST_ACTION" | jq -r '.metadata.creationTimestamp // empty')
                 [[ -z "$ACT_TIME" ]] && continue
 
-                if [[ -z "$LATEST_TIME" ]] || [[ "$ACT_TIME" > "$LATEST_TIME" ]]; then
+                act_epoch=""
+                act_epoch=$(date -d "$ACT_TIME" +%s 2>/dev/null) || continue
+                if [[ -z "$LATEST_TIME" ]] || [[ $act_epoch -gt $(date -d "$LATEST_TIME" +%s 2>/dev/null || echo 0) ]]; then
                     LATEST_TIME="$ACT_TIME"
                     LATEST_STATUS=$(echo "$LATEST_ACTION" | jq -r '.status.state // "Unknown"')
                     LATEST_ERROR=$(echo "$LATEST_ACTION" | jq -r '.status.error.message // empty')
                 fi
             done
-        done
+        done < <(echo "$POLICY" | jq -r '.spec.actions[].action // empty')
 
         [[ -z "$LATEST_STATUS" ]] && LATEST_STATUS="—"
 
         # Override status to Running if there are active actions
-        if $HAS_ACTIVE; then
+        if [[ "$HAS_ACTIVE" == "true" ]]; then
             LATEST_STATUS="Running"
             LATEST_ERROR=""
         fi
@@ -356,7 +353,7 @@ if $CHECK_MODE; then
 
         # Status label
         STATUS_DISPLAY="$LATEST_STATUS"
-        if $IS_STUCK; then
+        if [[ "$IS_STUCK" == "true" ]]; then
             STATUS_DISPLAY="STUCK (${LATEST_STATUS})"
         fi
 
@@ -397,7 +394,7 @@ if $CHECK_MODE; then
             while read -r ACT_NAME _ACT_STATUS ACT_NS; do
                 [[ -z "$ACT_NAME" ]] && continue
 
-                ACT_JSON=$(kubectl get "$ACTION_TYPE" "$ACT_NAME" -n "$ACT_NS" -o json 2>/dev/null) || continue
+                ACT_JSON=$(kubectl get "$ACTION_TYPE" "$ACT_NAME" -n "$ACT_NS" --request-timeout=30s -o json 2>/dev/null) || continue
                 [[ -z "$ACT_JSON" ]] && continue
 
                 ACT_STATE=$(echo "$ACT_JSON" | jq -r '.status.state // empty')
@@ -418,7 +415,11 @@ if $CHECK_MODE; then
                 if [[ -n "$ACT_AGE_REF" ]]; then
                     ACT_AGE_SECS=$(compute_age "$ACT_AGE_REF") || true
                     if [[ -n "${ACT_AGE_SECS:-}" ]]; then
-                        ACT_AGE_HOURS=$(( ACT_AGE_SECS / 3600 ))
+                        if [[ $ACT_AGE_SECS -lt 3600 ]]; then
+                            ACT_AGE_HOURS="$(awk "BEGIN { printf \"%.1f\", ${ACT_AGE_SECS}/3600 }")"
+                        else
+                            ACT_AGE_HOURS=$(( ACT_AGE_SECS / 3600 ))
+                        fi
                         [[ $ACT_AGE_SECS -ge $MAX_AGE_SECONDS ]] && ACT_IS_OLD=true
                     fi
                 fi
@@ -426,20 +427,20 @@ if $CHECK_MODE; then
                 # Health label
                 ACT_SIGNALS=()
                 case "$ACT_STATE" in
-                    Pending)        $ACT_IS_OLD && ACT_SIGNALS+=("old") ;;
+                    Pending)        [[ "$ACT_IS_OLD" == "true" ]] && ACT_SIGNALS+=("old") ;;
                     AttemptFailed)  ACT_SIGNALS+=("retry-loop") ;;
                     Running)
                         # Bug #5: check progress on all action types, not just PROGRESS_TYPES
-                        if [[ -n "$ACT_PROGRESS" && "$ACT_PROGRESS" == "0" ]] && $ACT_IS_OLD; then
+                        if [[ -n "$ACT_PROGRESS" && "$ACT_PROGRESS" == "0" ]] && [[ "$ACT_IS_OLD" == "true" ]]; then
                             ACT_SIGNALS+=("no-progress")
                         fi
                         [[ -n "$ACT_ERR" ]] && ACT_SIGNALS+=("has-error")
                         ;;
                 esac
 
-                if $ACT_IS_OLD && [[ ${#ACT_SIGNALS[@]} -gt 0 ]]; then
+                if [[ "$ACT_IS_OLD" == "true" ]] && [[ ${#ACT_SIGNALS[@]} -gt 0 ]]; then
                     ACT_HEALTH="STUCK"
-                elif $ACT_IS_OLD; then
+                elif [[ "$ACT_IS_OLD" == "true" ]]; then
                     ACT_HEALTH="OLD"
                 else
                     ACT_HEALTH="OK"
@@ -455,7 +456,7 @@ if $CHECK_MODE; then
                 # Signal suffix
                 ACT_SIGNAL_STR=""
                 if [[ ${#ACT_SIGNALS[@]} -gt 0 ]]; then
-                    ACT_SIGNAL_STR=" ($(IFS=", "; echo "${ACT_SIGNALS[*]}"))"
+                    ACT_SIGNAL_STR=" ($(printf '%s, ' "${ACT_SIGNALS[@]}" | sed 's/, $//'))"
                 fi
 
                 printf "  [%-5s] %-20s %-40s age=%-5s %s%s%s\n" \
@@ -489,12 +490,12 @@ if $CHECK_MODE; then
 fi
 
 # --- Show recently completed policies ---
-if $SHOW_COMPLETED; then
+if [[ "$SHOW_COMPLETED" == "true" ]]; then
     echo "=== Recently Completed K10 Policies ==="
     echo ""
 
-    POLICIES_JSON=$(kubectl get policies.config.kio.kasten.io -n "$NAMESPACE" -o json 2>&1) || {
-        echo "Error: failed to list K10 policies: ${POLICIES_JSON}" >&2
+    POLICIES_JSON=$(kubectl get policies.config.kio.kasten.io -n "$NAMESPACE" -o json 2>/dev/null) || {
+        echo "Error: failed to list K10 policies" >&2
         exit 1
     }
     if [[ "$(echo "$POLICIES_JSON" | jq '.items | length')" == "0" ]]; then
@@ -528,7 +529,8 @@ if $SHOW_COMPLETED; then
         LATEST_STATUS=""
         LATEST_VERB=""
 
-        for ACT_VERB in $(echo "$POLICY" | jq -r '.spec.actions[].action // empty'); do
+        while IFS= read -r ACT_VERB; do
+            [[ -z "$ACT_VERB" ]] && continue
             RESOURCE="${ACTION_VERB_MAP[$ACT_VERB]:-}"
             [[ -z "$RESOURCE" ]] && continue
 
@@ -543,13 +545,15 @@ if $SHOW_COMPLETED; then
                 ACT_TIME=$(echo "$LATEST_ACTION" | jq -r '.metadata.creationTimestamp // empty')
                 [[ -z "$ACT_TIME" ]] && continue
 
-                if [[ -z "$LATEST_TIME" ]] || [[ "$ACT_TIME" > "$LATEST_TIME" ]]; then
+                act_epoch=""
+                act_epoch=$(date -d "$ACT_TIME" +%s 2>/dev/null) || continue
+                if [[ -z "$LATEST_TIME" ]] || [[ $act_epoch -gt $(date -d "$LATEST_TIME" +%s 2>/dev/null || echo 0) ]]; then
                     LATEST_TIME="$ACT_TIME"
                     LATEST_STATUS=$(echo "$LATEST_ACTION" | jq -r '.status.state // "Unknown"')
                     LATEST_VERB="$ACT_VERB"
                 fi
             done
-        done
+        done < <(echo "$POLICY" | jq -r '.spec.actions[].action // empty')
 
         # Only show completed policies
         [[ "$LATEST_STATUS" != "Complete" ]] && continue
@@ -591,10 +595,10 @@ if $SHOW_COMPLETED; then
 fi
 
 # --- Cancel mode ---
-if $DRY_RUN; then
+if [[ "$DRY_RUN" == "true" ]]; then
     echo "[DRY RUN] No changes will be made."
 fi
-echo "Stuck detection: actions older than ${MAX_AGE_HOURS}h"
+echo "Stuck detection: actions older than ${MAX_AGE_DISPLAY}"
 echo ""
 
 TOTAL_FOUND=0
@@ -631,7 +635,7 @@ for ACTION_TYPE in "${ACTION_TYPES[@]}"; do
         fi
 
         # Bug #9: re-fetch action state to handle TOCTOU race
-        ACTION_JSON=$(kubectl get "$ACTION_TYPE" "$ACTION_NAME" -n "$NAMESPACE" -o json 2>&1) || {
+        ACTION_JSON=$(kubectl get "$ACTION_TYPE" "$ACTION_NAME" -n "$NAMESPACE" --request-timeout=30s -o json 2>&1) || {
             echo "Warning: could not fetch ${KIND} ${ACTION_NAME} (may have completed), skipping"
             continue
         }
@@ -675,7 +679,11 @@ for ACTION_TYPE in "${ACTION_TYPES[@]}"; do
             echo "Warning: could not parse timestamp '${AGE_REF}' for ${KIND} ${ACTION_NAME}, skipping"
             continue
         }
-        AGE_HOURS=$((AGE_SECONDS / 3600))
+        if [[ $AGE_SECONDS -lt 3600 ]]; then
+            AGE_HOURS="$(awk "BEGIN { printf \"%.1f\", ${AGE_SECONDS}/3600 }")"
+        else
+            AGE_HOURS=$((AGE_SECONDS / 3600))
+        fi
 
         # Gate: skip actions younger than the threshold
         if [[ $AGE_SECONDS -lt $MAX_AGE_SECONDS ]]; then
@@ -713,7 +721,7 @@ for ACTION_TYPE in "${ACTION_TYPES[@]}"; do
                     HAS_SIGNAL=true
                 fi
 
-                if ! $HAS_SIGNAL; then
+                if [[ "$HAS_SIGNAL" != "true" ]]; then
                     # Running, old, but no stuck signal — skip to protect healthy long ops
                     TOTAL_SKIPPED=$((TOTAL_SKIPPED + 1))
                     continue
@@ -722,7 +730,7 @@ for ACTION_TYPE in "${ACTION_TYPES[@]}"; do
         esac
 
         TOTAL_STUCK=$((TOTAL_STUCK + 1))
-        REASON_STR=$(IFS=", "; echo "${REASONS[*]}")
+        REASON_STR=$(printf '%s, ' "${REASONS[@]}" | sed 's/, $//')
         POLICY_LABEL=""
         if [[ -n "$POLICY_NAME" ]]; then
             POLICY_LABEL=" policy=${POLICY_NAME}"
@@ -732,33 +740,38 @@ for ACTION_TYPE in "${ACTION_TYPES[@]}"; do
             echo "  error: ${ERROR_MSG}"
         fi
 
-        if $DRY_RUN; then
+        if [[ "$DRY_RUN" == "true" ]]; then
             echo "  -> Would attempt cancel, then delete if cancel fails"
             continue
         fi
 
         # Try CancelAction first (works for Running actions)
-        if kubectl create -n "$NAMESPACE" -f - 2>&1 <<EOF
+        cancel_yaml=""
+        cancel_yaml=$(sed \
+            -e "s|__ACTION_NAME__|${ACTION_NAME}|g" \
+            -e "s|__NAMESPACE__|${NAMESPACE}|g" \
+            -e "s|__KIND__|${KIND}|g" <<'EOF'
 apiVersion: actions.kio.kasten.io/v1alpha1
 kind: CancelAction
 metadata:
-  generateName: cancel-${ACTION_NAME}-
-  namespace: ${NAMESPACE}
+  generateName: cancel-__ACTION_NAME__-
+  namespace: __NAMESPACE__
 spec:
   subject:
     apiVersion: actions.kio.kasten.io/v1alpha1
-    kind: ${KIND}
-    name: ${ACTION_NAME}
-    namespace: ${NAMESPACE}
+    kind: __KIND__
+    name: __ACTION_NAME__
+    namespace: __NAMESPACE__
 EOF
-        then
+        )
+        if echo "$cancel_yaml" | kubectl create --request-timeout=30s -n "$NAMESPACE" -f - 2>&1; then
             echo "  -> Cancelled via CancelAction"
             TOTAL_CANCELLED=$((TOTAL_CANCELLED + 1))
         else
             # CancelAction failed (likely "not yet cancelable" for Pending actions)
             # Fall back to direct deletion
             echo "  -> CancelAction failed, deleting directly..."
-            if kubectl delete "$ACTION_TYPE" "$ACTION_NAME" -n "$NAMESPACE" 2>&1; then
+            if kubectl delete "$ACTION_TYPE" "$ACTION_NAME" -n "$NAMESPACE" --request-timeout=30s 2>&1; then
                 echo "  -> Deleted"
                 TOTAL_DELETED=$((TOTAL_DELETED + 1))
             else
@@ -784,4 +797,4 @@ echo "AttemptFailed (retry):   ${COUNT_ATTEMPT_FAILED}"
 echo "No progress (stalled):   ${COUNT_NO_PROGRESS}"
 echo "Error signal:            ${COUNT_ERROR_SIGNAL}"
 
-exit "$TOTAL_FAILED"
+exit $(( TOTAL_FAILED > 0 ? 1 : 0 ))
