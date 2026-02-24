@@ -17,8 +17,7 @@ build/
 access.txt
 *.pem
 generate_license.py
-chart/manifests/postgres-secret.yaml
-chart/manifests/cloudflared-secret.yaml
+chart/
 
 # Scripts
 k10_repo_checker.sh

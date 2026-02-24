@@ -1,7 +1,0 @@
-FROM python:3.13-slim
-WORKDIR /app
-COPY app/requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-COPY app/dns_server.py .
-EXPOSE 5353/udp
-CMD ["python", "dns_server.py"]
