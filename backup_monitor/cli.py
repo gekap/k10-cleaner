@@ -8,9 +8,13 @@
 from __future__ import annotations
 
 import argparse
+import json
+import os
 import re
 import sys
 import time
+import urllib.error
+import urllib.request
 
 from . import VERSION
 from .compliance import ComplianceEngine
@@ -231,15 +235,64 @@ def _get_policy_action_verbs(policy: dict) -> list[str]:
 
 
 # ======================================================================
+# Webhook notifications
+# ======================================================================
+
+def _send_webhook(url: str, title: str, text: str, color: str = "#ef4444"):
+    """Send alert to Slack, Teams, or generic webhook. Tries Slack format first, then Teams."""
+    # Slack payload
+    slack_payload = json.dumps({
+        "attachments": [{
+            "color": color,
+            "title": title,
+            "text": text,
+            "footer": "backup-monitor",
+            "ts": int(time.time()),
+        }]
+    }).encode()
+
+    req = urllib.request.Request(
+        url, data=slack_payload,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        resp = urllib.request.urlopen(req, timeout=10)
+        if resp.status == 200:
+            return True
+    except Exception:
+        pass
+
+    # Fallback: Teams / generic webhook
+    teams_payload = json.dumps({
+        "title": title,
+        "text": text,
+    }).encode()
+    req = urllib.request.Request(
+        url, data=teams_payload,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        urllib.request.urlopen(req, timeout=10)
+        return True
+    except Exception:
+        print(f"Warning: failed to send webhook notification to {url}", file=sys.stderr)
+        return False
+
+
+# ======================================================================
 # BackupMonitor
 # ======================================================================
 
 class BackupMonitor:
-    def __init__(self, kubectl: Kubectl, db: BackupMonitorDB, compliance: ComplianceEngine):
+    def __init__(self, kubectl: Kubectl, db: BackupMonitorDB, compliance: ComplianceEngine,
+                 webhook_url: str = ""):
         self._kc = kubectl
         self._db = db
         self._compliance = compliance
         self._now_epoch = time.time()
+        self._webhook_url = webhook_url
 
     # ------------------------------------------------------------------
     # Check mode — policy status dashboard
@@ -459,6 +512,23 @@ class BackupMonitor:
         if count_stuck > 0:
             print()
             print("Tip: run with --dry-run to see what would be cancelled, or without flags to cancel stuck actions.")
+
+        # Webhook alert if stuck or failed policies detected
+        if self._webhook_url and (count_stuck > 0 or count_failed > 0):
+            lines = []
+            if count_stuck > 0:
+                lines.append(f"*Stuck:* {count_stuck} policies")
+            if count_failed > 0:
+                lines.append(f"*Failed:* {count_failed} policies")
+            lines.append(f"Total policies: {policy_count}")
+            cluster_ctx = self._kc.get_current_context() or "unknown"
+            lines.append(f"Cluster: {cluster_ctx}")
+            _send_webhook(
+                self._webhook_url,
+                "backup-monitor Alert",
+                "\n".join(lines),
+                color="#ef4444" if count_stuck > 0 else "#f59e0b",
+            )
 
     # ------------------------------------------------------------------
     # Show completed policies
@@ -688,6 +758,26 @@ class BackupMonitor:
         print(f"No progress (stalled):   {count_no_progress}")
         print(f"Error signal:            {count_error_signal}")
 
+        # Webhook alert if stuck actions were found
+        if self._webhook_url and total_stuck > 0:
+            lines = [f"*Stuck actions:* {total_stuck}"]
+            if total_cancelled > 0:
+                lines.append(f"Cancelled: {total_cancelled}")
+            if total_deleted > 0:
+                lines.append(f"Deleted: {total_deleted}")
+            if total_failed > 0:
+                lines.append(f"Failed to cancel: {total_failed}")
+            if dry_run:
+                lines.append("_(dry-run mode — no changes made)_")
+            cluster_ctx = self._kc.get_current_context() or "unknown"
+            lines.append(f"Cluster: {cluster_ctx}")
+            _send_webhook(
+                self._webhook_url,
+                "backup-monitor: Stuck Actions Detected",
+                "\n".join(lines),
+                color="#ef4444",
+            )
+
         return total_failed
 
     @staticmethod
@@ -761,6 +851,12 @@ def main():
         help="Print the cluster fingerprint and exit (use this to request a license)",
     )
     parser.add_argument(
+        "--webhook-url",
+        type=str,
+        metavar="<url>",
+        help="Send alerts to a Slack/Teams webhook URL when stuck or failed actions are detected",
+    )
+    parser.add_argument(
         "--version",
         action="version",
         version=(
@@ -820,7 +916,8 @@ def main():
         print("Check that kubectl is configured and you have access to the K10 namespace.", file=sys.stderr)
         sys.exit(1)
 
-    monitor = BackupMonitor(kc, db, compliance)
+    webhook_url = args.webhook_url or os.environ.get("BACKUP_MONITOR_WEBHOOK_URL", "")
+    monitor = BackupMonitor(kc, db, compliance, webhook_url=webhook_url)
 
     if args.check:
         monitor.run_check_mode(max_age_seconds)

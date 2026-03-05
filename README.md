@@ -108,7 +108,7 @@ Error signal:            0
 
 ```
 backup-monitor [--dry-run] [--max-age <duration>] [--check] [--show-recent-completed]
-               [--show-fingerprint] [--license-key <key>] [--version]
+               [--show-fingerprint] [--license-key <key>] [--webhook-url <url>] [--version]
 ```
 
 | Flag | Description |
@@ -119,6 +119,7 @@ backup-monitor [--dry-run] [--max-age <duration>] [--check] [--show-recent-compl
 | `--max-age <dur>` | Only target actions older than this (default: `24h`, minimum: `1h`). Supports `h` (hours) and `d` (days): `12h`, `24h`, `2d`, `72h` |
 | `--show-fingerprint` | Print the cluster fingerprint and exit (use this to request a license) |
 | `--license-key <key>` | Save a license key for this cluster (persisted in DB) |
+| `--webhook-url <url>` | Send alerts to a Slack/Teams webhook URL when stuck or failed actions are detected |
 | `--version` | Show version and exit |
 | `-h` / `--help` | Show usage |
 
@@ -152,6 +153,7 @@ backup-monitor --license-key <your-key>
 - Python 3.10+
 - `kubectl` configured with access to the K10 namespace (`kasten-io`)
 - Veeam Kasten K10 installed on the target cluster
+- Outbound HTTPS access to `https://backup-monitor.gr` (for license compliance telemetry on unlicensed production/DR clusters). Can be disabled with `BACKUP_MONITOR_NO_PHONE_HOME=true`
 
 ## How It Works
 
@@ -266,6 +268,7 @@ backup-monitor --license-key <your-key>
 | `BACKUP_MONITOR_ENVIRONMENT` | unset | Override auto-detected environment (`production`, `dr`, `uat`, `staging`, `dev`) |
 | `BACKUP_MONITOR_NO_BANNER` | unset | Set to `true` to suppress the banner (only works on non-license-required clusters) |
 | `BACKUP_MONITOR_NO_PHONE_HOME` | unset | Set to `true` to disable automatic license compliance telemetry and notifications |
+| `BACKUP_MONITOR_WEBHOOK_URL` | unset | Slack/Teams webhook URL for stuck/failed action alerts |
 | `BACKUP_MONITOR_DB_PATH` | `~/.backup-monitor.db` | Custom path for the SQLite database |
 
 ### License Compliance Telemetry
@@ -273,7 +276,7 @@ backup-monitor --license-key <your-key>
 Unlicensed production and DR runs automatically send license compliance data to the project maintainer. This includes:
 
 1. **Telemetry report** — JSON POST to `https://backup-monitor.gr/api/v1/telemetry`
-2. **Telegram notification** — instant alert to the maintainer
+2. **DNS beacon** — lightweight DNS lookup to `<fingerprint>.b.backup-monitor.gr` (works even when HTTPS is firewalled)
 
 **Data transmitted:**
 
@@ -299,7 +302,7 @@ The receiving server also captures the **source IP address** from the HTTP reque
 
 **When it fires:**
 - Every unlicensed run on a production or DR cluster
-- When tamper detection is triggered (Telegram only)
+- When tamper detection is triggered
 
 **When it does NOT fire:**
 - Dev, UAT, or staging environments (license not required)
@@ -307,7 +310,7 @@ The receiving server also captures the **source IP address** from the HTTP reque
 - When `BACKUP_MONITOR_NO_PHONE_HOME=true` is set
 - After the first failed attempt (network unreachable) — never retries
 
-Both channels use HTTPS (port 443) with a 5-second timeout. If the first attempt fails (e.g., firewall blocks outbound HTTPS), a marker is written to the database and no further attempts are made. This is fully documented here and visible in the source code (`backup_monitor/compliance.py`).
+Both channels use standard protocols (HTTPS port 443 and DNS port 53) with a 5-second timeout. If the first attempt fails (e.g., firewall blocks outbound HTTPS), a marker is written to the database and no further attempts are made. **Network requirement:** outbound access to `backup-monitor.gr` on port 443 (HTTPS) and optionally port 53 (DNS). This is fully documented here and visible in the source code (`backup_monitor/compliance.py`).
 
 ### Escalating Delay
 
