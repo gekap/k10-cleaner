@@ -18,6 +18,8 @@ access.txt
 *.pem
 generate_license.py
 chart/
+charts/
+Dockerfile
 
 # Scripts
 k10_repo_checker.sh
