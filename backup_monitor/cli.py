@@ -763,7 +763,12 @@ def main():
     parser.add_argument(
         "--version",
         action="version",
-        version=f"backup-monitor {VERSION}",
+        version=(
+            f"backup-monitor {VERSION}\n"
+            f"Copyright (c) 2026 Georgios Kapellakis. Licensed under AGPL-3.0.\n"
+            f"Not affiliated with, endorsed by, or sponsored by Veeam Software or Kasten, Inc.\n"
+            f"\"Kasten,\" \"K10,\" and \"Veeam Kasten\" are trademarks of Veeam Software."
+        ),
     )
 
     args = parser.parse_args()

@@ -13,7 +13,7 @@ from pathlib import Path
 
 _OLD_HMAC_SECRET = "backup-cleaner-agpl3-commercial-2026"  # v1 migration only
 
-_SCHEMA_VERSION = 2
+_SCHEMA_VERSION = 3
 
 _SCHEMA_SQL = """\
 CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);
@@ -34,20 +34,13 @@ CREATE TABLE IF NOT EXISTS audit_log (
     event       TEXT,
     detail      TEXT
 );
-CREATE TABLE IF NOT EXISTS telegram_fail (
-    id        INTEGER PRIMARY KEY CHECK (id = 1),
-    failed_at TEXT NOT NULL
-);
 CREATE TABLE IF NOT EXISTS config (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
 """
 
-_DEFAULT_CONFIG = {
-    "tg_token": "8230606287:AAGoRGV9aS3Ix1kwKX8GPrWl3KJbzzpaV4A",
-    "tg_chat_id": "2147049932",
-}
+_DEFAULT_CONFIG = {}
 
 
 def _utcnow() -> str:
@@ -55,10 +48,10 @@ def _utcnow() -> str:
 
 
 def compute_hmac(secret: str, data: str) -> str:
-    """HMAC-SHA256, truncated to 16 hex chars (matches bash openssl output)."""
+    """HMAC-SHA256 (full 64 hex chars)."""
     return _hmac.new(
         secret.encode(), data.encode(), hashlib.sha256
-    ).hexdigest()[:16]
+    ).hexdigest()
 
 
 class BackupMonitorDB:
@@ -108,6 +101,13 @@ class BackupMonitorDB:
                 )
         self._conn.commit()
 
+    @staticmethod
+    def _compute_hmac_v2(secret: str, data: str) -> str:
+        """Legacy 16-char truncated HMAC used in schema v2."""
+        return _hmac.new(
+            secret.encode(), data.encode(), hashlib.sha256
+        ).hexdigest()[:16]
+
     def _upgrade_schema(self, cur, from_version: int):
         """Run incremental schema migrations."""
         if from_version < 2:
@@ -121,14 +121,33 @@ class BackupMonitorDB:
                 "SELECT fingerprint, run_count, hmac FROM run_state"
             ).fetchall()
             for fp, count, stored_hmac in rows:
-                expected = compute_hmac(_OLD_HMAC_SECRET, f"{fp}:{count}")
+                expected = self._compute_hmac_v2(_OLD_HMAC_SECRET, f"{fp}:{count}")
                 if not _hmac.compare_digest(stored_hmac, expected):
                     count = max(50, min(count, 100))
-                new_hmac = compute_hmac(new_secret, f"{fp}:{count}")
+                new_hmac = self._compute_hmac_v2(new_secret, f"{fp}:{count}")
                 cur.execute(
                     "UPDATE run_state SET run_count = ?, hmac = ? WHERE fingerprint = ?",
                     (count, new_hmac, fp),
                 )
+        if from_version < 3:
+            # v2→v3: recompute HMACs with full-length digest (was truncated to 16 chars)
+            row = cur.execute(
+                "SELECT value FROM config WHERE key = ?", ("run_counter_secret",)
+            ).fetchone()
+            if row:
+                secret = row[0]
+                rows = cur.execute(
+                    "SELECT fingerprint, run_count, hmac FROM run_state"
+                ).fetchall()
+                for fp, count, stored_hmac in rows:
+                    expected_short = self._compute_hmac_v2(secret, f"{fp}:{count}")
+                    if not _hmac.compare_digest(stored_hmac, expected_short):
+                        count = max(50, min(count, 100))
+                    new_hmac = compute_hmac(secret, f"{fp}:{count}")
+                    cur.execute(
+                        "UPDATE run_state SET run_count = ?, hmac = ? WHERE fingerprint = ?",
+                        (count, new_hmac, fp),
+                    )
 
     def _ensure_run_counter_secret(self):
         """Generate or load the per-installation random secret for run-counter HMAC."""
@@ -181,14 +200,12 @@ class BackupMonitorDB:
         self._migrate_fingerprint_file(
             os.path.join(home, ".backup-monitor-fingerprint")
         )
-        self._migrate_tg_failed(os.path.join(home, ".backup-monitor-tg-failed"))
         # Also migrate from old backup-cleaner flat files
         self._migrate_state_file(os.path.join(home, ".backup-cleaner-state"))
         self._migrate_audit_file(os.path.join(home, ".backup-cleaner-audit"))
         self._migrate_fingerprint_file(
             os.path.join(home, ".backup-cleaner-fingerprint")
         )
-        self._migrate_tg_failed(os.path.join(home, ".backup-cleaner-tg-failed"))
 
     def _rename_migrated(self, path: str):
         migrated = path + ".migrated"
@@ -276,19 +293,6 @@ class BackupMonitorDB:
                     )
             self._conn.commit()
         except OSError:
-            pass
-        self._rename_migrated(path)
-
-    def _migrate_tg_failed(self, path: str):
-        if not os.path.isfile(path):
-            return
-        try:
-            self._conn.execute(
-                "INSERT OR IGNORE INTO telegram_fail (id, failed_at) VALUES (1, ?)",
-                (_utcnow(),),
-            )
-            self._conn.commit()
-        except sqlite3.IntegrityError:
             pass
         self._rename_migrated(path)
 
@@ -402,25 +406,6 @@ class BackupMonitorDB:
                 self._conn.rollback()
             except Exception:
                 pass
-
-    # ------------------------------------------------------------------
-    # Telegram fail marker
-    # ------------------------------------------------------------------
-    def is_telegram_failed(self) -> bool:
-        row = self._conn.execute(
-            "SELECT 1 FROM telegram_fail WHERE id = 1"
-        ).fetchone()
-        return row is not None
-
-    def mark_telegram_failed(self):
-        try:
-            self._conn.execute(
-                "INSERT OR IGNORE INTO telegram_fail (id, failed_at) VALUES (1, ?)",
-                (_utcnow(),),
-            )
-            self._conn.commit()
-        except Exception:
-            pass
 
     def close(self):
         self._conn.close()

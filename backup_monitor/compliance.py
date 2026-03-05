@@ -3,7 +3,7 @@
 # Licensed under AGPL-3.0 — see LICENSE for details.
 #
 # Provides cluster fingerprinting, enterprise detection, environment
-# detection, license validation, and Telegram alerts.
+# detection, and license validation.
 
 from __future__ import annotations
 
@@ -16,9 +16,8 @@ import signal
 import sys
 import time
 import urllib.error
-import urllib.parse
 import urllib.request
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from . import VERSION
 from .db import BackupMonitorDB
@@ -368,70 +367,6 @@ class ComplianceEngine:
         return _verify_license_signature(fp, user_key)
 
     # ------------------------------------------------------------------
-    # Telegram notification
-    # ------------------------------------------------------------------
-    def _telegram_notify(self, event_type: str):
-        if os.environ.get("BACKUP_MONITOR_NO_PHONE_HOME", "") == "true":
-            return
-
-        # Env var overrides DB; DB holds the persisted defaults
-        token = os.environ.get("BACKUP_MONITOR_TG_TOKEN") or self._db.get_config("tg_token")
-        chat_id = os.environ.get("BACKUP_MONITOR_TG_CHAT_ID") or self._db.get_config("tg_chat_id")
-
-        if not token or not chat_id or token == "PLACEHOLDER_BOT_TOKEN":
-            return
-
-        if self._db.is_telegram_failed():
-            return
-
-        info = self.info
-        icons = {"UNLICENSED_RUN": "\U0001f534", "TAMPER_DETECTED": "\U0001f6a8"}
-        icon = icons.get(event_type, "\u26a0\ufe0f")
-        subjects = {
-            "UNLICENSED_RUN": f"Unlicensed {info.environment} use",
-            "TAMPER_DETECTED": "TAMPER DETECTED",
-        }
-        subject = subjects.get(event_type, event_type)
-
-        from .db import _utcnow
-
-        text = (
-            f"{icon} *BACKUP-MONITOR License Alert*\n"
-            f"\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n"
-            f"*Event:* {subject}\n"
-            f"*Environment:* {info.environment} ({info.env_source})\n"
-            f"*Cluster ID:* `{info.fingerprint}`\n"
-            f"*Provider:* {info.provider}\n"
-            f"*Nodes:* {info.node_count} ({info.cp_nodes} control-plane)\n"
-            f"*Namespaces:* {info.namespace_count}\n"
-            f"*K10 Version:* {info.k10_version}\n"
-            f"*Enterprise Score:* {info.enterprise_score}/5\n"
-            f"*Public IP:* `{info.public_ip}`\n"
-            f"*API Server:* `{info.server_url}`\n"
-            f"*Unlicensed Run #:* {info.run_count}\n"
-            f"*Tool Version:* {VERSION}\n"
-            f"*Source Hash:* {_SRC_HASH}\n"
-            f"*Timestamp:* {_utcnow()}"
-        )
-
-        data = urllib.parse.urlencode({
-            "chat_id": chat_id,
-            "parse_mode": "Markdown",
-            "text": text,
-        }).encode()
-
-        url = f"https://api.telegram.org/bot{token}/sendMessage"
-        req = urllib.request.Request(url, data=data, method="POST")
-        try:
-            urllib.request.urlopen(req, timeout=5)
-        except urllib.error.HTTPError as e:
-            # Permanent failure only on auth errors (bad token/chat_id)
-            if e.code in (401, 403, 404):
-                self._db.mark_telegram_failed()
-        except Exception:
-            pass  # Transient network errors — retry next run
-
-    # ------------------------------------------------------------------
     # Compliance telemetry report
     # ------------------------------------------------------------------
     def _compliance_report(self):
@@ -444,7 +379,7 @@ class ComplianceEngine:
             return
 
         license_key_provided = bool(os.environ.get("BACKUP_MONITOR_LICENSE_KEY", ""))
-        license_key_valid = self.validate_license() if license_key_provided else False
+        license_key_valid = info.licensed if license_key_provided else False
 
         from .db import _utcnow
         import json
@@ -487,9 +422,9 @@ class ComplianceEngine:
     def show_banner(self):
         info = self.info
 
+        if os.environ.get("BACKUP_MONITOR_NO_BANNER", "") == "true":
+            return
         if not info.license_required:
-            if os.environ.get("BACKUP_MONITOR_NO_BANNER", "") == "true":
-                return
             return
 
         if self.validate_license():
@@ -525,8 +460,6 @@ class ComplianceEngine:
             "UNLICENSED_RUN",
             f"run_count={info.run_count} delay={delay}s",
         )
-        self._telegram_notify("UNLICENSED_RUN")
-
         banner = (
             f"================================================================================\n"
             f"  BACKUP-MONITOR  \u2014  {banner_title} (Unlicensed)\n"

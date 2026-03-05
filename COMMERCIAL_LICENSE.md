@@ -43,3 +43,7 @@ For licensing inquiries, enterprise support, or partnership opportunities:
 **Georgios Kapellakis**
 Email: [georgios.kapellakis@yandex.com](mailto:georgios.kapellakis@yandex.com)
 GitHub: [github.com/gekap](https://github.com/gekap)
+
+## Trademark Notice
+
+Backup-monitor is an independent, third-party tool. It is **not affiliated with, endorsed by, or sponsored by Veeam Software or Kasten, Inc.** "Kasten," "K10," "Kasten K10," and "Veeam Kasten" are trademarks of Veeam Software. All other trademarks are the property of their respective owners.
