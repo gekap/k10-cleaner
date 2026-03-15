@@ -1,10 +1,21 @@
-# Backup-monitor
+# Backup-monitor — Stuck Action Detection for Veeam Kasten K10
+
+[![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-blue.svg)](LICENSE)
+[![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-brightgreen.svg)](https://www.python.org/)
+[![Kubernetes](https://img.shields.io/badge/Kubernetes-compatible-326CE5.svg?logo=kubernetes&logoColor=white)](https://kubernetes.io/)
+[![Kasten K10](https://img.shields.io/badge/Kasten_K10-compatible-orange.svg)](https://www.kasten.io/)
 
 > **Trademark Notice:** Backup-monitor is an independent, third-party tool. It is **not affiliated with, endorsed by, or sponsored by Veeam Software or Kasten, Inc.** "Kasten," "K10," "Kasten K10," and "Veeam Kasten" are trademarks of Veeam Software. All other trademarks are the property of their respective owners.
 
-A smart stuck-action detection and cancellation tool for [Veeam Kasten K10](https://www.kasten.io/) backup environments.
+**Backup-monitor** is a smart stuck-action detection and cancellation tool for [Veeam Kasten K10](https://www.kasten.io/) backup environments running on Kubernetes (EKS, AKS, GKE, OpenShift, K3s, and more).
 
-K10 actions (backups, exports, restores) can get stuck in `Pending`, `Running`, or `AttemptFailed` states indefinitely. This tool identifies genuinely stuck actions using multi-signal detection and safely cancels them — without killing legitimate long-running operations.
+## The Problem
+
+Kasten K10 backup, export, and restore actions can get stuck in `Pending`, `Running`, or `AttemptFailed` states indefinitely — silently breaking your backup schedule with no alert. Manual intervention is required, but identifying which actions are genuinely stuck vs. legitimately long-running is difficult at scale.
+
+## The Solution
+
+Backup-monitor uses **multi-signal detection** to identify genuinely stuck K10 actions and safely cancel them — without killing legitimate long-running operations. It works as a CLI tool, a CronJob, or an on-demand diagnostic dashboard for your Kubernetes backup infrastructure.
 
 ## Features
 
@@ -103,6 +114,28 @@ Error signal:            0
 - Falls back to direct deletion for `Pending` actions that can't be cancelled
 - Re-checks action state before cancelling (handles race conditions)
 - Validates resource names before YAML interpolation
+
+## Quick Start
+
+```bash
+# Clone the repository
+git clone https://github.com/gekap/backup-monitor.git
+cd backup-monitor
+
+# Install dependencies
+pip install -r requirements.txt  # or: pip install .
+
+# Check your K10 backup status (read-only, safe to run anytime)
+backup-monitor --check
+
+# Preview what would be cancelled (dry run, no changes)
+backup-monitor --dry-run
+
+# Cancel stuck actions older than 24 hours
+backup-monitor
+```
+
+**Requirements:** Python 3.10+, `kubectl` with access to your K10 cluster.
 
 ## Usage
 
@@ -346,3 +379,28 @@ This tool is provided **as-is, without warranty of any kind**. Use at your own r
 ### Commercial License
 
 If your organization requires a **proprietary/commercial license** (without AGPL copyleft obligations), enterprise support, custom integrations, or SLA-backed maintenance, see [COMMERCIAL_LICENSE.md](COMMERCIAL_LICENSE.md) or contact: **georgios.kapellakis@yandex.com**
+
+## Compatibility
+
+| Platform | Supported |
+|----------|-----------|
+| Amazon EKS | Yes |
+| Azure AKS | Yes |
+| Google GKE | Yes |
+| Red Hat OpenShift | Yes |
+| Rancher RKE/RKE2 | Yes |
+| K3s | Yes |
+| Vanilla Kubernetes | Yes |
+| VMware Tanzu | Yes |
+
+Works with **Kasten K10 v5.x, v6.x, and v7.x** on any CNCF-conformant Kubernetes distribution.
+
+## Why Backup-monitor?
+
+- **No more silent backup failures** — catch stuck K10 actions before they break your RPO/RTO
+- **Safe by default** — multi-signal detection protects healthy long-running operations
+- **Zero infrastructure** — single Python script, no agents, no sidecar containers
+- **CronJob-ready** — automate stuck action cleanup on a schedule
+- **Dashboard included** — instant visibility into all K10 policy states
+- **Webhook alerts** — get notified on Slack or Microsoft Teams when actions get stuck
+- **Free for dev/staging** — no license required for non-production environments
